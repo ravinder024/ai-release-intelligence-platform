@@ -1,10 +1,16 @@
-import "dotenv/config";
+import dotenv from "dotenv";
 import cors from "cors";
 import express from "express";
 import { PrismaClient } from "@prisma/client";
 import { supportedModels, type Comparison, type CreateComparisonRequest, type ModelId } from "@prompt-playground/shared";
 import { z } from "zod";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { estimateCost, getModelProvider } from "./provider.js";
+
+const currentDirectory = dirname(fileURLToPath(import.meta.url));
+dotenv.config({ path: resolve(currentDirectory, "../.env") });
+dotenv.config({ path: resolve(currentDirectory, "../../../.env") });
 
 const prisma = new PrismaClient();
 const provider = getModelProvider();
