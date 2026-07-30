@@ -22,11 +22,19 @@ const createComparisonSchema = z.object({
 app.use(cors());
 app.use(express.json({ limit: "1mb" }));
 
-app.get("/health", (_request, response) => response.json({ status: "ok" }));
+app.get("/health", (_request, response) => response.json({
+  status: process.env.DATABASE_URL ? "ok" : "degraded",
+  database: process.env.DATABASE_URL ? "configured" : "not_configured",
+}));
 app.get("/api/models", (_request, response) => response.json({ models: supportedModels }));
 
 app.post("/api/comparisons", async (request, response, next) => {
   try {
+    if (!process.env.DATABASE_URL) {
+      return response.status(503).json({
+        error: "PostgreSQL is not configured. Set DATABASE_URL, run npm run db:migrate, and restart the API.",
+      });
+    }
     const payload = createComparisonSchema.parse(request.body) satisfies CreateComparisonRequest;
     const comparison = await prisma.promptComparison.create({
       data: { model: payload.model, input: payload.input },

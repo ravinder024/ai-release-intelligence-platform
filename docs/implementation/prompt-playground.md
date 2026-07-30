@@ -19,6 +19,10 @@ apps/web (React + Vite) -> apps/api (Express REST API) -> PostgreSQL
 
 This is a modular monolith: one deployable backend and one database. It avoids premature queues, event infrastructure, and service boundaries while leaving a narrow provider interface for future expansion.
 
+## Local startup
+
+The API development command compiles TypeScript and launches plain Node. This avoids relying on a TypeScript watch runtime at startup and is compatible with constrained local Node installations.
+
 ## Folder structure
 
 ```
