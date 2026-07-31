@@ -17,6 +17,8 @@ function App() {
   const [history, setHistory] = useState<Comparison[]>([]);
   const [isRunning, setIsRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [queryVolume, setQueryVolume] = useState(1_000);
+  const [volumePeriod, setVolumePeriod] = useState<"day" | "week" | "month">("month");
 
   useEffect(() => { void loadHistory(); }, []);
 
@@ -79,6 +81,18 @@ function App() {
           <button type="submit" disabled={isRunning}>{isRunning ? "Running both prompts…" : "Run comparison"}</button>
           {error && <p className="error" role="alert">{error}</p>}
           <p className="hint">Every run is saved to the comparison history.</p>
+          <fieldset className="scale-input">
+            <legend>Usage scale</legend>
+            <div>
+              <input aria-label="Query volume" type="number" min="1" value={queryVolume} onChange={(event) => setQueryVolume(Math.max(1, Number(event.target.value)))} />
+              <select aria-label="Query volume period" value={volumePeriod} onChange={(event) => setVolumePeriod(event.target.value as "day" | "week" | "month")}>
+                <option value="day">queries / day</option>
+                <option value="week">queries / week</option>
+                <option value="month">queries / month</option>
+              </select>
+            </div>
+            <p>Projected spend is based on the latest result for each variant.</p>
+          </fieldset>
         </section>
 
         <section className="prompt-grid">
@@ -87,7 +101,7 @@ function App() {
         </section>
       </form>
 
-      {comparison && <ComparisonView comparison={comparison} />}
+      {comparison && <ComparisonView comparison={comparison} queryVolume={queryVolume} volumePeriod={volumePeriod} />}
       <History history={history} onSelect={setComparison} />
     </main>
   );
@@ -100,22 +114,31 @@ function PromptEditor({ title, value, onChange }: { title: string; value: string
   </section>;
 }
 
-function ComparisonView({ comparison }: { comparison: Comparison }) {
+function ComparisonView({ comparison, queryVolume, volumePeriod }: { comparison: Comparison; queryVolume: number; volumePeriod: "day" | "week" | "month" }) {
   const executions = ["A", "B"].map((variant) => comparison.executions.find((execution) => execution.variant === variant)).filter(Boolean) as PromptExecution[];
   return <section className="result-section">
     <div className="section-heading"><div><p className="eyebrow">LATEST RESULT</p><h2>Side-by-side output</h2></div><span className={`status ${comparison.status}`}>{comparison.status.replace("_", " ")}</span></div>
-    <div className="result-grid">{executions.map((execution) => <ResultCard key={execution.id} execution={execution} />)}</div>
+    <div className="result-grid">{executions.map((execution) => <ResultCard key={execution.id} execution={execution} model={comparison.model} queryVolume={queryVolume} volumePeriod={volumePeriod} />)}</div>
   </section>;
 }
 
-function ResultCard({ execution }: { execution: PromptExecution }) {
+function ResultCard({ execution, model, queryVolume, volumePeriod }: { execution: PromptExecution; model: ModelId; queryVolume: number; volumePeriod: "day" | "week" | "month" }) {
+  const pricing = supportedModels.find((item) => item.id === model)!;
+  const inputCost = execution.inputTokens == null ? null : execution.inputTokens / 1_000_000 * pricing.inputCostPerMillion;
+  const outputCost = execution.outputTokens == null ? null : execution.outputTokens / 1_000_000 * pricing.outputCostPerMillion;
+  const totalCost = execution.estimatedCostUsd ?? (inputCost == null || outputCost == null ? null : inputCost + outputCost);
   return <article className="panel result-card">
     <div className="panel-title"><span>Prompt {execution.variant}</span><span className={`status ${execution.status}`}>{execution.status}</span></div>
-    {execution.status === "failed" ? <p className="error">{execution.errorMessage}</p> : <pre>{execution.output}</pre>}
+    {execution.status === "failed" ? <p className="error">{execution.errorMessage}</p> : <div className="model-output"><span>Model response</span><pre>{execution.output || "No response returned."}</pre></div>}
     <dl className="metrics">
       <div><dt>Latency</dt><dd>{execution.latencyMs?.toLocaleString() ?? "—"} ms</dd></div>
       <div><dt>Tokens</dt><dd>{execution.totalTokens?.toLocaleString() ?? "—"}</dd></div>
       <div><dt>Est. cost</dt><dd>{execution.estimatedCostUsd == null ? "—" : formatCost(execution.estimatedCostUsd)}</dd></div>
+      <div><dt>Input tokens</dt><dd>{execution.inputTokens?.toLocaleString() ?? "N/A"}</dd></div>
+      <div><dt>Output tokens</dt><dd>{execution.outputTokens?.toLocaleString() ?? "N/A"}</dd></div>
+      <div><dt>Input cost</dt><dd>{inputCost == null ? "N/A" : formatCost(inputCost)}</dd></div>
+      <div><dt>Output cost</dt><dd>{outputCost == null ? "N/A" : formatCost(outputCost)}</dd></div>
+      <div><dt>{queryVolume.toLocaleString()} / {volumePeriod}</dt><dd>{totalCost == null ? "N/A" : formatCost(totalCost * queryVolume)}</dd></div>
     </dl>
   </article>;
 }
