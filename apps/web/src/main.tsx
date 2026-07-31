@@ -5,7 +5,7 @@ import "./styles.css";
 
 const apiUrl = import.meta.env.VITE_API_URL ?? "http://localhost:3001";
 const initialRequest: CreateComparisonRequest = {
-  model: "gpt-4.1-mini",
+  model: "openai/gpt-oss-20b:free",
   input: "A customer says their monthly invoice is unexpectedly higher than usual. Draft a helpful response.",
   promptA: "You are a concise support assistant. Explain the likely next step in no more than 100 words.",
   promptB: "You are an empathetic support assistant. Acknowledge the concern, explain the likely next step, and offer a clear path to resolution.",

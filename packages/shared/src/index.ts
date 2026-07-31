@@ -1,15 +1,15 @@
 export const supportedModels = [
   {
-    id: "gpt-4.1-mini",
-    label: "GPT-4.1 mini",
-    inputCostPerMillion: 0.4,
-    outputCostPerMillion: 1.6,
+    id: "openai/gpt-oss-20b:free",
+    label: "OpenAI: gpt-oss-20b (free)",
+    inputCostPerMillion: 0,
+    outputCostPerMillion: 0,
   },
   {
-    id: "gpt-4.1",
-    label: "GPT-4.1",
-    inputCostPerMillion: 2,
-    outputCostPerMillion: 8,
+    id: "google/gemma-4-31b-it:free",
+    label: "Google: Gemma 4 31B (free)",
+    inputCostPerMillion: 0,
+    outputCostPerMillion: 0,
   },
 ] as const;
 
@@ -47,4 +47,3 @@ export type Comparison = {
   completedAt: string | null;
   executions: PromptExecution[];
 };
-

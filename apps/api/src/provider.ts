@@ -11,44 +11,34 @@ export interface ModelProvider {
   execute(args: { model: ModelId; prompt: string; input: string }): Promise<ProviderResult>;
 }
 
-class OpenAIProvider implements ModelProvider {
+class OpenRouterProvider implements ModelProvider {
   private client = new OpenAI({
-    apiKey: process.env.OPENAI_API_KEY,
-    baseURL: process.env.OPENAI_BASE_URL || undefined,
+    apiKey: process.env.OPENROUTER_API_KEY,
+    baseURL: process.env.OPENROUTER_BASE_URL || "https://openrouter.ai/api/v1",
   });
 
   async execute({ model, prompt, input }: { model: ModelId; prompt: string; input: string }) {
-    const response = await this.client.responses.create({
+    const response = await this.client.chat.completions.create({
       model,
-      instructions: prompt,
-      input,
+      messages: [
+        { role: "system", content: prompt },
+        { role: "user", content: input },
+      ],
     });
 
     return {
-      output: response.output_text,
-      inputTokens: response.usage?.input_tokens ?? 0,
-      outputTokens: response.usage?.output_tokens ?? 0,
+      output: response.choices[0]?.message.content || "No response returned.",
+      inputTokens: response.usage?.prompt_tokens ?? 0,
+      outputTokens: response.usage?.completion_tokens ?? 0,
     };
   }
-}
-
-class LocalDevelopmentProvider implements ModelProvider {
-  async execute({ model, prompt, input }: { model: ModelId; prompt: string; input: string }) {
-    const output = `[Local preview · ${model}]\n\n${prompt}\n\nInput: ${input}`;
-    return {
-      output,
-      inputTokens: estimateTokens(`${prompt}\n${input}`),
-      outputTokens: estimateTokens(output),
-    };
-  }
-}
-
-function estimateTokens(text: string) {
-  return Math.max(1, Math.ceil(text.trim().length / 4));
 }
 
 export function getModelProvider(): ModelProvider {
-  return process.env.OPENAI_API_KEY ? new OpenAIProvider() : new LocalDevelopmentProvider();
+  if (!process.env.OPENROUTER_API_KEY) {
+    throw new Error("OPENROUTER_API_KEY is required to run model comparisons.");
+  }
+  return new OpenRouterProvider();
 }
 
 export function estimateCost(model: ModelId, inputTokens: number, outputTokens: number) {
@@ -60,4 +50,3 @@ export function estimateCost(model: ModelId, inputTokens: number, outputTokens: 
     (outputTokens / 1_000_000) * pricing.outputCostPerMillion
   );
 }
-
