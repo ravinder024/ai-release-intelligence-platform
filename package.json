@@ -6,7 +6,8 @@
     "dev": "concurrently -n api,web -c blue,green \"npm run dev -w @prompt-playground/api\" \"npm run dev -w @prompt-playground/web\"",
     "build": "npm run build -w @prompt-playground/api && npm run build -w @prompt-playground/web",
     "db:generate": "npm run prisma:generate -w @prompt-playground/api",
-    "db:migrate": "npm run prisma:migrate -w @prompt-playground/api"
+    "db:migrate": "npm run prisma:migrate -w @prompt-playground/api",
+    "db:seed": "npm run db:seed -w @prompt-playground/api"
   },
   "devDependencies": {
     "concurrently": "^9.1.2"

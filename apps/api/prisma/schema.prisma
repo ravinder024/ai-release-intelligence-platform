@@ -51,3 +51,72 @@ model PromptExecution {
   @@index([comparisonId])
   @@map("prompt_executions")
 }
+
+model Dataset {
+  id          String            @id @default(uuid()) @db.Uuid
+  name        String            @db.VarChar(160)
+  description String?           @db.Text
+  useCase     String?           @db.VarChar(160)
+  createdAt   DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime          @updatedAt @map("updated_at") @db.Timestamptz(6)
+  testCases   DatasetTestCase[]
+  runs        EvaluationRun[]
+
+  @@index([createdAt(sort: Desc)])
+  @@map("datasets")
+}
+
+model DatasetTestCase {
+  id             String             @id @default(uuid()) @db.Uuid
+  datasetId      String             @map("dataset_id") @db.Uuid
+  input          String             @db.Text
+  expectedOutput String?            @map("expected_output") @db.Text
+  notes          String?            @db.Text
+  position       Int                @default(0)
+  createdAt      DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  dataset        Dataset            @relation(fields: [datasetId], references: [id], onDelete: Cascade)
+  results        EvaluationResult[]
+
+  @@index([datasetId, position])
+  @@map("dataset_test_cases")
+}
+
+model EvaluationRun {
+  id          String            @id @default(uuid()) @db.Uuid
+  datasetId   String            @map("dataset_id") @db.Uuid
+  model       String            @db.VarChar(160)
+  promptA     String            @map("prompt_a") @db.Text
+  promptB     String            @map("prompt_b") @db.Text
+  status      ComparisonStatus  @default(running)
+  createdAt   DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+  completedAt DateTime?         @map("completed_at") @db.Timestamptz(6)
+  dataset     Dataset           @relation(fields: [datasetId], references: [id], onDelete: Cascade)
+  results     EvaluationResult[]
+
+  @@index([createdAt(sort: Desc)])
+  @@map("evaluation_runs")
+}
+
+model EvaluationResult {
+  id                String           @id @default(uuid()) @db.Uuid
+  runId             String           @map("run_id") @db.Uuid
+  testCaseId        String           @map("test_case_id") @db.Uuid
+  variant           String           @db.Char(1)
+  prompt            String           @db.Text
+  output            String?          @db.Text
+  latencyMs         Int?             @map("latency_ms")
+  inputTokens       Int?             @map("input_tokens")
+  outputTokens      Int?             @map("output_tokens")
+  totalTokens       Int?             @map("total_tokens")
+  estimatedCostUsd  Decimal?         @map("estimated_cost_usd") @db.Decimal(12, 8)
+  status            ExecutionStatus
+  errorMessage      String?          @map("error_message") @db.Text
+  createdAt         DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+  run               EvaluationRun    @relation(fields: [runId], references: [id], onDelete: Cascade)
+  testCase          DatasetTestCase  @relation(fields: [testCaseId], references: [id], onDelete: Cascade)
+
+  @@unique([runId, testCaseId, variant])
+  @@index([runId])
+  @@index([testCaseId])
+  @@map("evaluation_results")
+}

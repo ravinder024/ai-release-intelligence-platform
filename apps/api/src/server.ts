@@ -1,29 +1,22 @@
 import dotenv from "dotenv";
 import cors from "cors";
 import express from "express";
-import { PrismaClient } from "@prisma/client";
-import { supportedModels, type Comparison, type CreateComparisonRequest, type ModelId } from "@prompt-playground/shared";
+import { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { estimateCost, getModelProvider } from "./provider.js";
+import { comparisonsRouter } from "./routes/comparisons.js";
+import { datasetsRouter } from "./routes/datasets.js";
+import { evaluationsRouter } from "./routes/evaluations.js";
+import { modelsRouter } from "./routes/models.js";
+import { prisma } from "./prisma.js";
 
 const currentDirectory = dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: resolve(currentDirectory, "../.env") });
 dotenv.config({ path: resolve(currentDirectory, "../../../.env") });
 
-const prisma = new PrismaClient();
-const provider = getModelProvider();
 const app = express();
 const port = Number(process.env.PORT ?? 3001);
-
-const modelIds = supportedModels.map(({ id }) => id) as [ModelId, ...ModelId[]];
-const createComparisonSchema = z.object({
-  model: z.enum(modelIds),
-  input: z.string().trim().min(1, "Input is required").max(50_000),
-  promptA: z.string().trim().min(1, "Prompt A is required").max(50_000),
-  promptB: z.string().trim().min(1, "Prompt B is required").max(50_000),
-});
 
 app.use(cors());
 app.use(express.json({ limit: "1mb" }));
@@ -32,154 +25,35 @@ app.get("/health", (_request, response) => response.json({
   status: process.env.DATABASE_URL ? "ok" : "degraded",
   database: process.env.DATABASE_URL ? "configured" : "not_configured",
 }));
-app.get("/api/models", (_request, response) => response.json({ models: supportedModels }));
 
-app.post("/api/comparisons", async (request, response, next) => {
-  try {
-    if (!process.env.DATABASE_URL) {
-      return response.status(503).json({
-        error: "PostgreSQL is not configured. Set DATABASE_URL, run npm run db:migrate, and restart the API.",
-      });
-    }
-    const payload = createComparisonSchema.parse(request.body) satisfies CreateComparisonRequest;
-    const comparison = await prisma.promptComparison.create({
-      data: { model: payload.model, input: payload.input },
-    });
-
-    const outcomes = await Promise.all([
-      executeVariant(comparison.id, "A", payload.model, payload.promptA, payload.input),
-      executeVariant(comparison.id, "B", payload.model, payload.promptB, payload.input),
-    ]);
-    const status = outcomes.every((outcome) => outcome === "completed") ? "completed" : "partial_failure";
-    await prisma.promptComparison.update({
-      where: { id: comparison.id },
-      data: { status, completedAt: new Date() },
-    });
-
-    response.status(201).json(await findComparison(comparison.id));
-  } catch (error) {
-    next(error);
-  }
-});
-
-app.get("/api/comparisons", async (request, response, next) => {
-  try {
-    const requestedLimit = Number(request.query.limit ?? 20);
-    const limit = Number.isFinite(requestedLimit) ? Math.min(Math.max(Math.floor(requestedLimit), 1), 100) : 20;
-    const comparisons = await prisma.promptComparison.findMany({
-      take: limit,
-      orderBy: { createdAt: "desc" },
-      include: { executions: { orderBy: { variant: "asc" } } },
-    });
-    response.json(comparisons.map(toComparison));
-  } catch (error) {
-    next(error);
-  }
-});
-
-app.get("/api/comparisons/:id", async (request, response, next) => {
-  try {
-    const comparison = await findComparison(request.params.id);
-    if (!comparison) return response.status(404).json({ error: "Comparison not found" });
-    return response.json(comparison);
-  } catch (error) {
-    return next(error);
-  }
-});
-
-async function executeVariant(comparisonId: string, variant: "A" | "B", model: ModelId, prompt: string, input: string) {
-  const startedAt = performance.now();
-  try {
-    const result = await provider.execute({ model, prompt, input });
-    const latencyMs = Math.round(performance.now() - startedAt);
-    await prisma.promptExecution.create({
-      data: {
-        comparisonId,
-        variant,
-        prompt,
-        output: result.output,
-        latencyMs,
-        inputTokens: result.inputTokens,
-        outputTokens: result.outputTokens,
-        totalTokens: result.inputTokens + result.outputTokens,
-        estimatedCostUsd: estimateCost(model, result.inputTokens, result.outputTokens),
-        status: "completed",
-      },
-    });
-    return "completed" as const;
-  } catch (error) {
-    await prisma.promptExecution.create({
-      data: {
-        comparisonId,
-        variant,
-        prompt,
-        latencyMs: Math.round(performance.now() - startedAt),
-        status: "failed",
-        errorMessage: error instanceof Error ? error.message : "Unknown provider error",
-      },
-    });
-    return "failed" as const;
-  }
-}
-
-async function findComparison(id: string): Promise<Comparison | null> {
-  const comparison = await prisma.promptComparison.findUnique({
-    where: { id },
-    include: { executions: { orderBy: { variant: "asc" } } },
-  });
-  return comparison ? toComparison(comparison) : null;
-}
-
-type ComparisonWithExecutions = {
-  id: string;
-  model: string;
-  input: string;
-  status: "running" | "completed" | "partial_failure";
-  createdAt: Date;
-  completedAt: Date | null;
-  executions: Array<{
-    id: string;
-    variant: string;
-    prompt: string;
-    output: string | null;
-    latencyMs: number | null;
-    inputTokens: number | null;
-    outputTokens: number | null;
-    totalTokens: number | null;
-    estimatedCostUsd: { toString(): string } | null;
-    status: "completed" | "failed";
-    errorMessage: string | null;
-  }>;
-};
-
-function toComparison(comparison: ComparisonWithExecutions): Comparison {
-  return {
-    id: comparison.id,
-    model: comparison.model as ModelId,
-    input: comparison.input,
-    status: comparison.status,
-    createdAt: comparison.createdAt.toISOString(),
-    completedAt: comparison.completedAt?.toISOString() ?? null,
-    executions: comparison.executions.map((execution) => ({
-      id: execution.id,
-      variant: execution.variant as "A" | "B",
-      prompt: execution.prompt,
-      output: execution.output,
-      latencyMs: execution.latencyMs,
-      inputTokens: execution.inputTokens,
-      outputTokens: execution.outputTokens,
-      totalTokens: execution.totalTokens,
-      estimatedCostUsd: execution.estimatedCostUsd ? Number(execution.estimatedCostUsd) : null,
-      status: execution.status,
-      errorMessage: execution.errorMessage,
-    })),
-  } satisfies Comparison;
-}
+app.use("/api", modelsRouter);
+app.use("/api", comparisonsRouter);
+app.use("/api", datasetsRouter);
+app.use("/api", evaluationsRouter);
 
 app.use((error: unknown, _request: express.Request, response: express.Response, _next: express.NextFunction) => {
-  if (error instanceof z.ZodError) return response.status(400).json({ error: "Invalid comparison", details: error.flatten() });
+  if (error instanceof z.ZodError) return response.status(400).json({ error: "Invalid request", details: error.flatten() });
+  if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2025") {
+    return response.status(404).json({ error: "Resource not found" });
+  }
   console.error(error);
   return response.status(500).json({ error: "Unexpected server error" });
 });
 
-app.listen(port, () => console.log(`Prompt Playground API listening on http://localhost:${port}`));
+app.listen(port, () => {
+  console.log(`Prompt Playground API listening on http://localhost:${port}`);
+  void recoverStaleRuns();
+});
+
+async function recoverStaleRuns() {
+  if (!process.env.DATABASE_URL) return;
+  try {
+    const result = await prisma.evaluationRun.updateMany({
+      where: { status: "running" },
+      data: { status: "partial_failure", completedAt: new Date() },
+    });
+    if (result.count > 0) console.log(`Marked ${result.count} interrupted evaluation run(s) as partial_failure.`);
+  } catch (error) {
+    console.error("Could not recover interrupted evaluation runs:", error);
+  }
+}

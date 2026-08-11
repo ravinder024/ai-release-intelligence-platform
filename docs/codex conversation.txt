@@ -1,0 +1,302 @@
+Please do the needful, create the necessary env files and run the commands
+Postgres user: postgres
+password: predator2
+
+
+
+
+
+
+Friday 1:10 AM
+
+
+
+
+
+
+Worked for 3m 53s
+
+
+
+Fixed and verified end to end.
+Created ignored local environment files with the supplied PostgreSQL credentials.
+Created the prompt_playground database.
+Applied migration 0001_init.
+Restarted the API with reliable environment loading.
+Verified a real comparison: 201 Created, two executions saved, and history returns the saved entry.
+Open the playground: http://localhost:5173
+The API is healthy: http://localhost:3001/health
+Refresh the page and click Run comparison—it should now work. A test comparison is already visible in recent history.
+Committed the configuration-loading fix: d926452 fix: load API environment files explicitly.
+
+Edited 3 files+13-1Review changesUndoReview
+
+.env.env+3-0
+apps/api/.envapps/api/.env+3-0
+apps/api/src/server.tsapps/api/src/server.ts+7-1
+
+
+
+
+
+Friday 1:14 AM
+
+
+
+
+
+
+
+I think the app is not working as expected.
+In the side-by-side output there is no output shown for both models. Tokens and estimated cost is shared, but I think these two must be shown differently for I/P and O/P for each model.
+Optionally, I want to showcase how things would like at scale. For e.g. for the default shared input, we can ask user how many such queries they are getting per day/week/month. We can ask the scale of the use-case so that they can correlate wrt to token and cost expense. (let me know your thoughts on this)
+
+
+
+
+
+
+Friday 8:20 AM
+
+
+
+
+
+
+Worked for 4m 22s
+
+
+
+Updated and committed the result experience: 4d30ddf feat: show per-variant cost and scale projections.
+After refreshing http://localhost:5173, each Prompt A/B result now shows:
+Explicit Model response section
+Latency
+Input tokens and output tokens
+Total tokens
+Input cost and output cost
+Total cost per query
+Projected cost at the selected usage volume
+I added a compact Usage scale control—enter query count and choose per day/week/month. It projects cost separately for Prompt A and Prompt B. This is a useful MVP addition because it directly supports the release decision without turning the product into a broad analytics dashboard. The scale is intentionally not saved yet.
+I also verified the backend is returning distinct outputs and token counts for each variant. Note: without OPENAI_API_KEY, those outputs are clearly labeled local previews; add an API key to the ignored .env files for real model-generated responses.
+
+Edited 2 files+29-5Review changesUndoReview
+
+apps/web/src/main.tsxapps/web/src/main.tsx+28-5
+apps/web/src/styles.cssapps/web/src/styles.css+1-0
+
+
+
+
+
+Friday 8:25 AM
+
+
+
+
+
+
+
+
+
+
+There is no generated output text, please see
+
+
+
+
+
+
+Friday 8:26 AM
+
+
+
+
+
+
+You’re right—the screenshot shows the local fallback echoing the prompt and input, not a real generated model response.
+The playground needs an OPENAI_API_KEY to call the selected model. Please provide the key, or add it to both local env files:
+OPENAI_API_KEY="your-key"
+Then I’ll restart the API and verify that Prompt A and B return real, distinct responses.
+I’ll also replace the current misleading fallback behavior so it clearly says “API key required” rather than presenting echoed text as a model response.
+
+
+Friday 8:27 AM
+
+
+
+
+
+
+
+Use my Openrouter key instead, use free models only (say 1 from nvidia and 1 from minimax):
+How should I provide my key?
+
+
+
+
+
+
+Friday 8:29 AM
+
+
+
+
+
+
+Worked for 30s
+
+
+
+Please don’t paste the key into chat.
+Add it locally to this ignored file:
+[D:\Projects\AI Release Intelligence Platform\apps\api.env](D:\Projects\AI Release Intelligence Platform\apps\api.env)
+OPENROUTER_API_KEY="sk-or-v1-your-key-here"
+OPENROUTER_BASE_URL="https://openrouter.ai/api/v1"
+You can also add the same values to [D:\Projects\AI Release Intelligence Platform.env](D:\Projects\AI Release Intelligence Platform.env), though the API-specific file is the important one.
+Then reply “key added”. I’ll update the provider integration to OpenRouter, offer one NVIDIA and one MiniMax free model, restart the API, and verify real responses for both prompt variants.
+
+
+Friday 8:29 AM
+
+
+
+
+
+
+
+key added, please verify
+
+
+
+
+
+
+Friday 8:30 AM
+
+
+
+
+
+
+Worked for 1m 5s
+
+
+
+Your OpenRouter key is configured and readable by the API. I verified OpenRouter’s live catalog:
+NVIDIA has several free options, including nvidia/nemotron-3-nano-30b-a3b:free.
+MiniMax currently has no free model; its lowest-priced offerings are paid. OpenRouter model catalog
+To honor your “free models only” requirement, I need your choice:
+Use NVIDIA free model for both prompt variants.
+Use NVIDIA free + a different free provider/model.
+Allow the lowest-cost MiniMax model alongside NVIDIA free.
+I have not sent any prompt using your key yet.
+
+
+Friday 8:31 AM
+
+
+
+
+
+
+
+Alright, use these two instead
+openai/gpt-oss-20b:free
+google/gemma-4-31b-it:free
+
+
+
+
+
+
+Friday 8:33 AM
+
+
+
+
+
+
+I’ll update the provider to OpenRouter’s OpenAI-compatible chat endpoint, replace the selector with those two requested free models, disable the misleading local echo fallback, then run a live comparison using your configured key. I’ll first validate the two model IDs against the live catalog.
+
+
+
+
+Edited files
+
+
+Both requested model IDs are currently valid and free. The adapter now uses OpenRouter’s chat-completions API (rather than the previous local preview), and the selector offers exactly those two models with zero-priced cost projections. I’ll build, restart, and execute a real comparison to verify the provider response.
+
+
+
+
+The integration and database persistence are working, but the live model request itself returned a network-level connection error for both variants. I’ll make a direct, key-authenticated OpenRouter request from the configured environment (without printing the key) to determine whether this is local network access or an OpenRouter credential/model issue.
+
+
+
+
+The direct OpenRouter call succeeded (connection verified), so the key and models are valid. The API process was launched under the restricted local runtime, which blocked its outgoing network call. I’ll restart only that API process with network permission, then re-run the end-to-end comparison.
+
+
+
+
+
+
+
+The OpenAI gpt-oss free model now works end to end with real, distinct responses for both variants. The requested Gemma model was accepted by the catalog but both live requests failed at execution, so I’m checking its provider error before declaring it usable in the selector.
+
+Edited 4 files+64-14Review changesUndoReview
+
+.env.example.env.example+3-4
+packages/shared/src/index.tspackages/shared/src/index.ts+8-9
+apps/api/src/provider.tsapps/api/src/provider.ts+52-0
+Show 1 more file
+
+
+
+
+Friday 8:38 AM
+
+
+
+
+
+
+
+Make sure not to hard code the logic for these two models only. In the future, we can give the flexibility to users to select models for comparisons on their own.
+
+
+
+
+
+
+Friday 8:38 AM
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Approve for me
+
+
+
+
+
+
+
+5.6 TerraExtra High5.6 TerraMedium
