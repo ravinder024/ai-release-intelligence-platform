@@ -57,6 +57,7 @@ model Dataset {
   name        String            @db.VarChar(160)
   description String?           @db.Text
   useCase     String?           @db.VarChar(160)
+  isSample    Boolean           @default(false)
   createdAt   DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt   DateTime          @updatedAt @map("updated_at") @db.Timestamptz(6)
   testCases   DatasetTestCase[]
@@ -67,31 +68,35 @@ model Dataset {
 }
 
 model DatasetTestCase {
-  id             String             @id @default(uuid()) @db.Uuid
-  datasetId      String             @map("dataset_id") @db.Uuid
-  input          String             @db.Text
-  expectedOutput String?            @map("expected_output") @db.Text
-  notes          String?            @db.Text
-  position       Int                @default(0)
-  createdAt      DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
-  dataset        Dataset            @relation(fields: [datasetId], references: [id], onDelete: Cascade)
-  results        EvaluationResult[]
+  id                 String             @id @default(uuid()) @db.Uuid
+  datasetId          String             @map("dataset_id") @db.Uuid
+  input              String             @db.Text
+  expectedOutput     String?            @map("expected_output") @db.Text
+  evaluationCriteria Json?              @map("evaluation_criteria")
+  notes              String?            @db.Text
+  position           Int                @default(0)
+  createdAt          DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  dataset            Dataset            @relation(fields: [datasetId], references: [id], onDelete: Cascade)
+  results            EvaluationResult[]
 
   @@index([datasetId, position])
   @@map("dataset_test_cases")
 }
 
 model EvaluationRun {
-  id          String            @id @default(uuid()) @db.Uuid
-  datasetId   String            @map("dataset_id") @db.Uuid
-  model       String            @db.VarChar(160)
-  promptA     String            @map("prompt_a") @db.Text
-  promptB     String            @map("prompt_b") @db.Text
-  status      ComparisonStatus  @default(running)
-  createdAt   DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
-  completedAt DateTime?         @map("completed_at") @db.Timestamptz(6)
-  dataset     Dataset           @relation(fields: [datasetId], references: [id], onDelete: Cascade)
-  results     EvaluationResult[]
+  id                 String            @id @default(uuid()) @db.Uuid
+  datasetId          String            @map("dataset_id") @db.Uuid
+  model              String            @db.VarChar(160)
+  promptA            String            @map("prompt_a") @db.Text
+  promptB            String            @map("prompt_b") @db.Text
+  evaluatorModel     String?           @map("evaluator_model") @db.VarChar(160)
+  evaluatorThreshold Int?              @map("evaluator_threshold")
+  evaluatorPrompt    String?           @map("evaluator_prompt") @db.Text
+  status             ComparisonStatus  @default(running)
+  createdAt          DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+  completedAt        DateTime?         @map("completed_at") @db.Timestamptz(6)
+  dataset            Dataset           @relation(fields: [datasetId], references: [id], onDelete: Cascade)
+  results            EvaluationResult[]
 
   @@index([createdAt(sort: Desc)])
   @@map("evaluation_runs")
@@ -114,9 +119,44 @@ model EvaluationResult {
   createdAt         DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
   run               EvaluationRun    @relation(fields: [runId], references: [id], onDelete: Cascade)
   testCase          DatasetTestCase  @relation(fields: [testCaseId], references: [id], onDelete: Cascade)
+  judgement         EvaluationJudgement?
 
   @@unique([runId, testCaseId, variant])
   @@index([runId])
   @@index([testCaseId])
   @@map("evaluation_results")
+}
+
+model EvaluationJudgement {
+  id              String                    @id @default(uuid()) @db.Uuid
+  resultId        String                    @map("result_id") @db.Uuid
+  overallScore    Int                       @map("overall_score")
+  pass            Boolean
+  summary         String?                   @db.Text
+  evaluatorModel  String?                   @map("evaluator_model") @db.VarChar(160)
+  threshold       Int?                      @map("threshold")
+  status          ExecutionStatus
+  errorMessage    String?                   @map("error_message") @db.Text
+  rawOutput       String?                   @map("raw_output") @db.Text
+  createdAt       DateTime                  @default(now()) @map("created_at") @db.Timestamptz(6)
+  result          EvaluationResult          @relation(fields: [resultId], references: [id], onDelete: Cascade)
+  criteriaResults EvaluationCriterionResult[]
+
+  @@unique([resultId])
+  @@index([resultId])
+  @@map("evaluation_judgements")
+}
+
+model EvaluationCriterionResult {
+  id            String             @id @default(uuid()) @db.Uuid
+  judgementId   String             @map("judgement_id") @db.Uuid
+  criterion     String             @db.Text
+  score         Int
+  pass          Boolean
+  reason        String?            @db.Text
+  createdAt     DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  judgement     EvaluationJudgement @relation(fields: [judgementId], references: [id], onDelete: Cascade)
+
+  @@index([judgementId])
+  @@map("evaluation_criterion_results")
 }

@@ -3,7 +3,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import type { DatasetDetail, DatasetTestCase } from "@prompt-playground/shared";
 import { api } from "../api";
 
-const emptyScenario = { input: "", expectedOutput: "", notes: "" };
+const emptyScenario = { input: "", expectedOutput: "", evaluationCriteria: "", notes: "" };
 
 export function DatasetDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -56,6 +56,10 @@ export function DatasetDetailPage() {
       const created = await api.post<DatasetTestCase>(`/api/datasets/${dataset.id}/test-cases`, {
         input: scenarioForm.input,
         expectedOutput: scenarioForm.expectedOutput || undefined,
+        evaluationCriteria: scenarioForm.evaluationCriteria
+          .split("\n")
+          .map((line) => line.trim())
+          .filter(Boolean),
         notes: scenarioForm.notes || undefined,
       });
       setDataset({ ...dataset, testCases: [...dataset.testCases, created], testCaseCount: dataset.testCaseCount + 1 });
@@ -69,7 +73,12 @@ export function DatasetDetailPage() {
 
   function startEdit(testCase: DatasetTestCase) {
     setEditingId(testCase.id);
-    setEditForm({ input: testCase.input, expectedOutput: testCase.expectedOutput ?? "", notes: testCase.notes ?? "" });
+    setEditForm({
+      input: testCase.input,
+      expectedOutput: testCase.expectedOutput ?? "",
+      evaluationCriteria: testCase.evaluationCriteria?.join("\n") ?? "",
+      notes: testCase.notes ?? "",
+    });
   }
 
   async function saveEdit(testCase: DatasetTestCase) {
@@ -79,6 +88,10 @@ export function DatasetDetailPage() {
       const updated = await api.patch<DatasetTestCase>(`/api/datasets/${dataset.id}/test-cases/${testCase.id}`, {
         input: editForm.input,
         expectedOutput: editForm.expectedOutput || null,
+        evaluationCriteria: editForm.evaluationCriteria
+          .split("\n")
+          .map((line) => line.trim())
+          .filter(Boolean),
         notes: editForm.notes || null,
       });
       setDataset({
@@ -118,6 +131,25 @@ export function DatasetDetailPage() {
       <div className="intro">
         <p className="eyebrow"><Link to="/datasets" className="back-link">DATASETS</Link> / {dataset.testCaseCount} SCENARIOS</p>
         <h1>{dataset.name}</h1>
+        <div className="row-actions">
+          {!dataset.isSample ? (
+            <button className="danger" onClick={async () => {
+              const confirmation = prompt('Type DELETE to confirm dataset deletion');
+              if (confirmation !== 'DELETE') return;
+              setBusy(true);
+              try {
+                await api.delete(`/api/datasets/${dataset.id}`);
+                navigate('/datasets');
+              } catch (err) {
+                setError(err instanceof Error ? err.message : 'Could not delete dataset');
+              } finally {
+                setBusy(false);
+              }
+            }} disabled={busy}>Delete dataset</button>
+          ) : (
+            <span title="This is a sample dataset and cannot be deleted." className="muted">Sample dataset — cannot delete</span>
+          )}
+        </div>
         {!isEditingMeta ? (
           <p>{dataset.description || "No description."} {dataset.useCase && <span className="badge">{dataset.useCase}</span>}</p>
         ) : (
@@ -150,10 +182,13 @@ export function DatasetDetailPage() {
           <label>What a good answer should include (optional)
             <textarea value={scenarioForm.expectedOutput} onChange={(e) => setScenarioForm((c) => ({ ...c, expectedOutput: e.target.value }))} rows={2} />
           </label>
-          <label>Notes (optional)
-            <textarea value={scenarioForm.notes} onChange={(e) => setScenarioForm((c) => ({ ...c, notes: e.target.value }))} rows={2} />
+          <label>Evaluation criteria (optional, one per line)
+            <textarea value={scenarioForm.evaluationCriteria} onChange={(e) => setScenarioForm((c) => ({ ...c, evaluationCriteria: e.target.value }))} rows={2} />
           </label>
         </div>
+        <label>Notes (optional)
+          <textarea value={scenarioForm.notes} onChange={(e) => setScenarioForm((c) => ({ ...c, notes: e.target.value }))} rows={2} />
+        </label>
         <button type="submit" disabled={busy || scenarioForm.input.trim().length === 0}>Add scenario</button>
       </form>
 
@@ -167,6 +202,7 @@ export function DatasetDetailPage() {
                 <div className="scenario-edit">
                   <label>Question<textarea value={editForm.input} onChange={(e) => setEditForm((c) => ({ ...c, input: e.target.value }))} rows={2} /></label>
                   <label>Expected output<textarea value={editForm.expectedOutput} onChange={(e) => setEditForm((c) => ({ ...c, expectedOutput: e.target.value }))} rows={2} /></label>
+                  <label>Evaluation criteria<textarea value={editForm.evaluationCriteria} onChange={(e) => setEditForm((c) => ({ ...c, evaluationCriteria: e.target.value }))} rows={2} /></label>
                   <label>Notes<textarea value={editForm.notes} onChange={(e) => setEditForm((c) => ({ ...c, notes: e.target.value }))} rows={2} /></label>
                   <div className="row-actions">
                     <button onClick={() => saveEdit(testCase)} disabled={busy}>Save</button>
@@ -181,6 +217,9 @@ export function DatasetDetailPage() {
                   </div></div>
                   <p className="scenario-input">{testCase.input}</p>
                   {testCase.expectedOutput && <p className="scenario-meta"><strong>Expected:</strong> {testCase.expectedOutput}</p>}
+                  {testCase.evaluationCriteria?.length ? (
+                    <p className="scenario-meta"><strong>Criteria:</strong> {testCase.evaluationCriteria.join(", ")}</p>
+                  ) : null}
                   {testCase.notes && <p className="scenario-meta"><strong>Notes:</strong> {testCase.notes}</p>}
                 </>
               )}

@@ -42,6 +42,8 @@ export function EvaluationResultsPage() {
   const isRunning = run.status === "running";
   const percent = run.progress.total === 0 ? 0 : Math.round((run.progress.completed / run.progress.total) * 100);
 
+  const hasJudge = Boolean(run.evaluatorModel);
+
   return (
     <section>
       <div className="intro">
@@ -49,6 +51,17 @@ export function EvaluationResultsPage() {
         <h1>How did both prompts do?</h1>
         <p>Dataset: <Link to={`/datasets/${run.datasetId}`} className="back-link">{run.datasetName}</Link> · {run.model}</p>
       </div>
+
+      {hasJudge ? (
+        <div className="panel judge-summary">
+          <div className="judge-row">
+            <span className="judge-badge">LLM judge</span>
+            <span>{run.evaluatorModel}</span>
+            <span>Pass threshold: {run.evaluatorThreshold ?? "—"}%</span>
+          </div>
+          {run.evaluatorPrompt ? <p className="judge-prompt">{truncate(run.evaluatorPrompt, 140)}</p> : null}
+        </div>
+      ) : null}
 
       <div className="section-heading">
         <div><p className="eyebrow">RUN</p><h2>{new Date(run.createdAt).toLocaleString()}</h2></div>
@@ -60,12 +73,33 @@ export function EvaluationResultsPage() {
           <div className="progress-row"><span>Evaluating {run.testCases.length} scenario{run.testCases.length === 1 ? "" : "s"}…</span><strong>{run.progress.completed} / {run.progress.total}</strong></div>
           <div className="progress-track"><div className="progress-fill" style={{ width: `${percent}%` }} /></div>
           <p className="hint">Running scenarios a few at a time to avoid rate limits. This page updates automatically.</p>
+          <div className="run-actions">
+            <button type="button" onClick={async () => {
+              if (!confirm('Stop this run? In-flight jobs will finish but remaining jobs will be cancelled.')) return;
+              try {
+                await api.post(`/api/evaluations/${run.id}/stop`, {});
+              } catch (err) {
+                setError(err instanceof Error ? err.message : 'Could not stop run');
+                return;
+              }
+              // poll until the run is no longer running (or timeout after 15s)
+              const until = Date.now() + 15000;
+              while (Date.now() < until) {
+                const current = await load();
+                if (!current || current.status !== 'running') break;
+                await new Promise((r) => setTimeout(r, 1000));
+              }
+            }}>Stop</button>
+          </div>
         </div>
       ) : (
         <div className="panel summary-bar">
           <span>{run.testCases.length} scenario{run.testCases.length === 1 ? "" : "s"}</span>
           <span>{run.progress.completed} results saved</span>
           {run.completedAt && <span>Finished {new Date(run.completedAt).toLocaleTimeString()}</span>}
+          <div className="run-actions">
+            <button type="button" onClick={async () => { await api.post(`/api/evaluations/${run.id}/restart`, {}); await load(); }}>Restart</button>
+          </div>
         </div>
       )}
 
@@ -82,6 +116,7 @@ export function EvaluationResultsPage() {
             input={testCase.input}
             expected={testCase.expectedOutput}
             notes={testCase.notes}
+            criteria={testCase.evaluationCriteria}
             resultA={findResult(run.results, testCase.id, "A")}
             resultB={findResult(run.results, testCase.id, "B")}
             model={run.model}
@@ -96,11 +131,12 @@ function findResult(results: EvaluationResult[], testCaseId: string, variant: "A
   return results.find((result) => result.testCaseId === testCaseId && result.variant === variant);
 }
 
-function ResultRow({ index, input, expected, notes, resultA, resultB, model }: {
+function ResultRow({ index, input, expected, notes, criteria, resultA, resultB, model }: {
   index: number;
   input: string;
   expected: string | null;
   notes: string | null;
+  criteria: string[] | null;
   resultA: EvaluationResult | undefined;
   resultB: EvaluationResult | undefined;
   model: ModelId;
@@ -111,6 +147,9 @@ function ResultRow({ index, input, expected, notes, resultA, resultB, model }: {
         <span className="scenario-num">#{index + 1}</span>
         <p>{input}</p>
         {expected && <p className="scenario-meta"><strong>Expected:</strong> {expected}</p>}
+        {criteria?.length ? (
+          <p className="scenario-meta"><strong>Criteria:</strong> {criteria.join(", ")}</p>
+        ) : null}
         {notes && <p className="scenario-meta"><strong>Notes:</strong> {notes}</p>}
       </div>
       <ResultCell result={resultA} model={model} label="A" />
@@ -125,9 +164,37 @@ function ResultCell({ result, model, label }: { result: EvaluationResult | undef
   }
   const pricing = supportedModels.find((item) => item.id === model);
   const isFree = pricing !== undefined && pricing.inputCostPerMillion === 0 && pricing.outputCostPerMillion === 0;
+  const judgement = result.judgement;
+
   return (
-    <div className="eval-cell">
+    <div className={`eval-cell${judgement ? " judged" : ""}`}>
       <span className="eval-label">Prompt {label}</span>
+      {judgement ? (
+        <div className="judgement-panel">
+          <div className={`judge-pill ${judgement.pass ? "pass" : "fail"}`}>
+            {judgement.pass ? "Judge pass" : "Judge fail"}
+          </div>
+          <span className="judge-score">Score {judgement.overallScore}%</span>
+          {judgement.status === "failed" ? (
+            <p className="error">Judge error: {judgement.errorMessage ?? "Unknown issue"}</p>
+          ) : judgement.summary ? (
+            <p className="judgement-summary">{judgement.summary}</p>
+          ) : null}
+          {judgement.criteriaResults.length > 0 ? (
+            <details className="criteria-details">
+              <summary>Criteria results</summary>
+              <ul className="criteria-list">
+                {judgement.criteriaResults.map((criterion) => (
+                  <li key={criterion.id}>
+                    <strong>{criterion.criterion}</strong>: {criterion.score}% · {criterion.pass ? "Pass" : "Fail"}
+                    {criterion.reason ? <span>: {criterion.reason}</span> : null}
+                  </li>
+                ))}
+              </ul>
+            </details>
+          ) : null}
+        </div>
+      ) : null}
       <pre className="eval-output">{result.output || "No response returned."}</pre>
       <div className="eval-metrics">
         <span title="Latency">{result.latencyMs?.toLocaleString() ?? "—"} ms</span>

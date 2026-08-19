@@ -72,6 +72,29 @@ Once the evaluation completes, review:
 
 The results page shows progress while the run is still `running`, then preserves a completed record for review.
 
+## Phase 3 workflow: automated judging and review
+
+Phase 3 adds optional automated evaluation using an LLM-based judge that scores each prompt response against the test case and any supplied evaluation criteria. Judgements include an overall score (0–100), a pass/fail flag based on a configurable threshold, a short summary, and per-criterion scores and reasons.
+
+How to run with the judge enabled:
+1. Open a dataset and click `Run evaluation`.
+2. Toggle "Evaluate results with an LLM judge" in the run form.
+3. (Optional) Choose the judge model, set a pass threshold (percent), and edit the judge prompt used to guide scoring.
+4. Start the run. Judgements are produced after each successful model call and saved with the result.
+
+How to read judge output in the UI:
+- The results page shows a judge summary at the top of the run when a judge was used (model and threshold).
+- Each result cell that was judged displays a pass/fail pill, the overall score, a short summary, and an expandable list of per-criterion results with scores and optional reasons.
+- Use the pass/fail pill and the score to quickly identify regressions between Prompt A and Prompt B.
+
+Guidance and best practices:
+- Provide concise, actionable evaluation criteria (one per line) when adding test cases to get focused per-criterion scores.
+- Start with a modest pass threshold (e.g., 60–70%) and adjust after reviewing judge output on a sample dataset.
+- Treat judge output as decision support — inspect summaries and per-criterion reasons before making product decisions.
+
+Human review and future scope:
+- Phase 3 focuses on automated LLM judgement and persistence. Human-in-the-loop review, reviewer queues, and consensus workflows are planned for a later phase and are documented in the roadmap.
+
 ## How to use the playground effectively
 
 - Start with a small dataset to validate prompt structure before scaling up.
@@ -85,13 +108,7 @@ The results page shows progress while the run is still `running`, then preserves
 
 ## What this platform does not do yet
 
-Phase 2 intentionally does not include:
-- AI judging or automatic scoring
-- pass/fail labeling
-- hallucination detection
-- dashboards or team collaboration
-- prompt versioning
-- authentication
+Phase 3 intentionally avoids implementing role-based access, reviewer queues, or dashboards; these are documented as future work. The current system now includes automated LLM judging and per-criterion scoring, but still does not provide authentication, multi-user review workflows, or built-in hallucination detection.
 
 Those features are planned for later phases.
 

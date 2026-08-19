@@ -19,6 +19,7 @@ const updateDatasetSchema = z.object({
 const createTestCaseSchema = z.object({
   input: z.string().trim().min(1, "Input is required").max(50_000),
   expectedOutput: z.string().trim().max(50_000).optional(),
+  evaluationCriteria: z.array(z.string().trim().min(1, "Each criterion must be non-empty")).optional(),
   notes: z.string().trim().max(10_000).optional(),
   position: z.number().int().min(0).optional(),
 });
@@ -26,6 +27,7 @@ const createTestCaseSchema = z.object({
 const updateTestCaseSchema = z.object({
   input: z.string().trim().min(1, "Input is required").max(50_000).optional(),
   expectedOutput: z.string().trim().max(50_000).nullable().optional(),
+  evaluationCriteria: z.array(z.string().trim().min(1, "Each criterion must be non-empty")).nullable().optional(),
   notes: z.string().trim().max(10_000).nullable().optional(),
   position: z.number().int().min(0).optional(),
 });
@@ -91,6 +93,9 @@ datasetsRouter.patch("/datasets/:id", async (request, response, next) => {
 
 datasetsRouter.delete("/datasets/:id", async (request, response, next) => {
   try {
+    const dataset = await prisma.dataset.findUnique({ where: { id: request.params.id }, select: { id: true, isSample: true } });
+    if (!dataset) return response.status(404).json({ error: "Dataset not found" });
+    if (dataset.isSample) return response.status(403).json({ error: "Sample datasets cannot be deleted" });
     await prisma.dataset.delete({ where: { id: request.params.id } });
     response.status(204).end();
   } catch (error) {
@@ -112,6 +117,9 @@ datasetsRouter.post("/datasets/:id/test-cases", async (request, response, next) 
         datasetId: dataset.id,
         input: payload.input,
         expectedOutput: payload.expectedOutput,
+        ...(payload.evaluationCriteria === undefined
+          ? {}
+          : { evaluationCriteria: payload.evaluationCriteria ?? Prisma.JsonNull }),
         notes: payload.notes,
         position: payload.position ?? (maxPosition._max.position ?? -1) + 1,
       },
@@ -127,7 +135,15 @@ datasetsRouter.patch("/datasets/:datasetId/test-cases/:testCaseId", async (reque
     const payload = updateTestCaseSchema.parse(request.body);
     const testCase = await prisma.datasetTestCase.update({
       where: { id: request.params.testCaseId, datasetId: request.params.datasetId },
-      data: payload,
+      data: {
+        input: payload.input,
+        expectedOutput: payload.expectedOutput,
+        ...(payload.evaluationCriteria === undefined
+          ? {}
+          : { evaluationCriteria: payload.evaluationCriteria ?? Prisma.JsonNull }),
+        notes: payload.notes,
+        position: payload.position,
+      },
     });
     response.json(toTestCase(testCase));
   } catch (error) {
@@ -151,6 +167,7 @@ type DatasetWithCount = {
   name: string;
   description: string | null;
   useCase: string | null;
+  isSample: boolean;
   createdAt: Date;
   updatedAt: Date;
 };
@@ -161,6 +178,7 @@ function toDataset(dataset: DatasetWithCount, testCaseCount: number): Dataset {
     name: dataset.name,
     description: dataset.description,
     useCase: dataset.useCase,
+    isSample: Boolean((dataset as any).isSample),
     createdAt: dataset.createdAt.toISOString(),
     updatedAt: dataset.updatedAt.toISOString(),
     testCaseCount,
@@ -172,6 +190,7 @@ type TestCaseRow = {
   datasetId: string;
   input: string;
   expectedOutput: string | null;
+  evaluationCriteria: Prisma.JsonValue;
   notes: string | null;
   position: number;
 };
@@ -182,6 +201,9 @@ function toTestCase(testCase: TestCaseRow): DatasetTestCase {
     datasetId: testCase.datasetId,
     input: testCase.input,
     expectedOutput: testCase.expectedOutput,
+    evaluationCriteria: Array.isArray(testCase.evaluationCriteria)
+      ? testCase.evaluationCriteria.map((item) => String(item))
+      : null,
     notes: testCase.notes,
     position: testCase.position,
   };

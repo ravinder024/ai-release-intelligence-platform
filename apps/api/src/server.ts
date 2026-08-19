@@ -43,6 +43,8 @@ app.use((error: unknown, _request: express.Request, response: express.Response, 
 app.listen(port, () => {
   console.log(`Prompt Playground API listening on http://localhost:${port}`);
   void recoverStaleRuns();
+  // Periodically reconcile runs that may be stuck (every 2 minutes)
+  setInterval(() => { void recoverStaleRuns(); }, 2 * 60 * 1000);
 });
 
 async function recoverStaleRuns() {
@@ -57,3 +59,14 @@ async function recoverStaleRuns() {
     console.error("Could not recover interrupted evaluation runs:", error);
   }
 }
+
+// Admin endpoint to trigger reconciliation manually
+app.post('/api/admin/reconcile-runs', async (_req, res) => {
+  try {
+    await recoverStaleRuns();
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error('Manual reconcile failed', err);
+    return res.status(500).json({ error: 'reconcile failed' });
+  }
+});

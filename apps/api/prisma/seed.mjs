@@ -55,13 +55,13 @@ async function main() {
   let dataset = await prisma.dataset.findFirst({ where: { name: SAMPLE_NAME } });
   if (!dataset) {
     dataset = await prisma.dataset.create({
-      data: { name: SAMPLE_NAME, description: SAMPLE_DESCRIPTION, useCase: SAMPLE_USE_CASE },
+      data: { name: SAMPLE_NAME, description: SAMPLE_DESCRIPTION, useCase: SAMPLE_USE_CASE, isSample: true },
     });
     console.log(`Created sample dataset "${SAMPLE_NAME}".`);
   } else {
     dataset = await prisma.dataset.update({
       where: { id: dataset.id },
-      data: { description: SAMPLE_DESCRIPTION, useCase: SAMPLE_USE_CASE },
+      data: { description: SAMPLE_DESCRIPTION, useCase: SAMPLE_USE_CASE, isSample: true },
     });
     console.log(`Sample dataset "${SAMPLE_NAME}" already exists; keeping its history.`);
   }
@@ -93,6 +93,50 @@ async function main() {
 
   const total = existing.length + added;
   console.log(`Sample dataset "${SAMPLE_NAME}" ready with ${total} scenario(s) (added ${added}).`);
+
+  // Travel - Flights sample dataset (~15 scenarios)
+  const TRAVEL_NAME = "Travel - Flights";
+  const TRAVEL_USE_CASE = "travel";
+  const TRAVEL_DESCRIPTION = "Common flight booking and itinerary scenarios for evaluating travel assistant behavior.";
+
+  const TRAVEL_SCENARIOS = [
+    { input: "I need to book a one-way flight from NYC to LAX next Friday in the morning. What are my options?", expectedOutput: "Show flight options, times, carriers, and price ranges.", notes: "Basic search" },
+    { input: "Can you find the cheapest round-trip tickets from London to Paris for next month?", expectedOutput: "Return cheapest options and note layovers.", notes: "Price-sensitive search" },
+    { input: "I have a tight connection in Chicago with 45 minutes between flights, is that enough time?", expectedOutput: "Advise whether connection is safe and suggest alternatives.", notes: "Connection advice" },
+    { input: "What's the baggage allowance for my ticket if I fly economy on Delta?", expectedOutput: "State typical allowances and link to carrier policy.", notes: "Baggage question" },
+    { input: "I need to change my flight date but the website says fees apply. How do I proceed?", expectedOutput: "Explain change process and fee estimation.", notes: "Change fees" },
+    { input: "Is it possible to reserve a seat with extra legroom on a basic economy fare?", expectedOutput: "Explain seat selection policies and options.", notes: "Seat selection" },
+    { input: "My flight was cancelled and I need rebooking options. What are my rights?", expectedOutput: "Provide rebooking steps and compensation info.", notes: "Cancellations" },
+    { input: "How do I add a frequent flyer number to an existing reservation?", expectedOutput: "Steps to add FF number and verify accrual.", notes: "Loyalty program" },
+    { input: "Are pets allowed in-cabin on international flights to Spain?", expectedOutput: "Explain carrier pet policies and documentation needed.", notes: "Pet travel" },
+    { input: "I lost my boarding pass email, how can I check in at the airport?", expectedOutput: "Guide to airport check-in and ID requirements.", notes: "Check-in support" },
+    { input: "What's the best way to get from the airport to downtown by public transit?", expectedOutput: "Suggest transit options and approximate travel times.", notes: "Ground transport" },
+    { input: "Can I request a special meal for my flight? How far in advance?", expectedOutput: "Explain meal request process and timing.", notes: "Special requests" },
+    { input: "I need assistance boarding due to limited mobility. How do I arrange this?", expectedOutput: "Provide assistance request steps and contact info.", notes: "Accessibility" },
+    { input: "Are there any COVID-19 testing requirements for entering Canada right now?", expectedOutput: "Provide current guidance and link to official sources.", notes: "Travel restrictions" },
+    { input: "What's the difference between refundable and non-refundable fares?", expectedOutput: "Explain refund policy and change flexibility.", notes: "Fare rules" },
+  ];
+
+  let travelDataset = await prisma.dataset.findFirst({ where: { name: TRAVEL_NAME } });
+  if (!travelDataset) {
+    travelDataset = await prisma.dataset.create({ data: { name: TRAVEL_NAME, description: TRAVEL_DESCRIPTION, useCase: TRAVEL_USE_CASE, isSample: true } });
+    console.log(`Created sample dataset "${TRAVEL_NAME}".`);
+  } else {
+    travelDataset = await prisma.dataset.update({ where: { id: travelDataset.id }, data: { description: TRAVEL_DESCRIPTION, useCase: TRAVEL_USE_CASE, isSample: true } });
+    console.log(`Sample dataset "${TRAVEL_NAME}" already exists; keeping its history.`);
+  }
+
+  const existingTravel = await prisma.datasetTestCase.findMany({ where: { datasetId: travelDataset.id }, select: { input: true } });
+  const existingTravelInputs = new Set(existingTravel.map((t) => t.input));
+  let addedTravel = 0;
+  for (const scenario of TRAVEL_SCENARIOS) {
+    if (existingTravelInputs.has(scenario.input)) continue;
+    const maxPosition = await prisma.datasetTestCase.aggregate({ where: { datasetId: travelDataset.id }, _max: { position: true } });
+    await prisma.datasetTestCase.create({ data: { datasetId: travelDataset.id, input: scenario.input, expectedOutput: scenario.expectedOutput, notes: scenario.notes, position: (maxPosition._max.position ?? -1) + 1 } });
+    addedTravel++;
+  }
+  const totalTravel = existingTravel.length + addedTravel;
+  console.log(`Sample dataset "${TRAVEL_NAME}" ready with ${totalTravel} scenario(s) (added ${addedTravel}).`);
 }
 
 main()
