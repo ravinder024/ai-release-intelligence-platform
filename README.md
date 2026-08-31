@@ -88,6 +88,8 @@ The app runs as a single Express process serving API + SPA. A typical production
 - `npm ci` → `npm run build` → `npx prisma migrate deploy` (inside `apps/api`) → `npm run db:seed` → `npm run db:prune`.
 - Run `node apps/api/dist/server.js` under a process manager (e.g. systemd), behind nginx with TLS (e.g. Let's Encrypt).
 
+> 📋 Full step-by-step instructions (systemd unit + nginx config + certbot): **[docs/Deployment.md](docs/Deployment.md)**
+
 ## Security notes
 
 - Per-user OpenRouter keys are encrypted at rest; keep `ENCRYPTION_KEY` stable across restarts.
