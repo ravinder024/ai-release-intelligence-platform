@@ -12,11 +12,24 @@ This manual is the living guide for the platform. It will be updated after every
 
 ## Getting started
 
-1. Start the API and web app locally:
-   - `npm run dev`
-   - Open the web app in the browser at `http://localhost:5173`.
-2. Ensure `DATABASE_URL` and `OPENROUTER_API_KEY` are configured in the root `.env`.
-3. Use the `Datasets` page to create benchmark datasets and evaluate prompt quality.
+The whole product runs on a single port (`5101`). The API server also serves the built web app, so there is only one process and one URL.
+
+1. Build and start the app locally:
+   - `npm run dev` (builds both apps and starts the server)
+   - Open the app in the browser at `http://localhost:5101`.
+2. Ensure `DATABASE_URL` is configured in the root `.env` (`PORT=5101`), plus `ENCRYPTION_KEY` and `SESSION_COOKIE_SECRET`.
+3. **Create an account** (or sign in) and add your own OpenRouter key in **Settings**. Each user brings their own key — the host's key is never used for your calls.
+4. Use the `Datasets` page to create benchmark datasets and evaluate prompt quality.
+
+> Port notes: the app always runs on `5101`. Before starting, stop any other Node servers so no other app ports (e.g. `3001`, `5173`) are in use.
+
+## Accounts & your private workspace
+
+- **Sign up / Sign in:** open the landing page and choose **Create an account** (name, email, password) or **Sign in**. Sessions use a secure httpOnly cookie.
+- **Forgot password:** on the sign-in page choose *Forgot password?*, enter your email, and use the one-time reset code shown on screen to set a new password.
+- **Your OpenRouter key:** go to **Settings → Your OpenRouter key** and save it. It is validated, then encrypted and stored on your account; it is used only for model calls you make.
+- **Private workspace:** your datasets, evaluations, and experiments are visible only to you. The two sample datasets (Customer Support, Travel - Flights) are shared and read-only for everyone.
+- **Sign out:** use **Settings → Sign out** or the top-right menu.
 
 ## Phase 1 workflow: prompt comparison
 
@@ -108,7 +121,7 @@ Human review and future scope:
 
 ## What this platform does not do yet
 
-Phase 3 intentionally avoids implementing role-based access, reviewer queues, or dashboards; these are documented as future work. The current system now includes automated LLM judging and per-criterion scoring, but still does not provide authentication, multi-user review workflows, or built-in hallucination detection.
+The platform now includes accounts and private workspaces, but still does not provide email-based password reset (reset codes are shown in-app), role-based access / admin, reviewer queues, dashboards, or built-in hallucination detection.
 
 Those features are planned for later phases.
 
@@ -116,7 +129,67 @@ Those features are planned for later phases.
 
 - Phase 1: complete — single input prompt comparison with history.
 - Phase 2: complete — dataset evaluation, benchmark scenarios, saved runs.
-- Phase 3: planned — next phase will extend evaluation capabilities while preserving the current workflow.
+- Phase 3: complete — automated LLM judging and per-criterion scoring.
+- Phase 4: complete — experiments and reproducible snapshots.
+- Phase 5: complete — accounts (SSO), per-user OpenRouter keys, private workspaces, in-app User Manual.
+
+### Phase 4 workflow: experiments and decisions
+
+Phase 4 makes Experiments a first-class product concept. An experiment is a controlled comparison between two AI configurations — a **Baseline** (the current configuration) and a **Candidate** (the proposed configuration) — evaluated on the same golden dataset. It answers: *"Did my AI change actually improve the product?"*
+
+The experiment journey is self-contained under the **Experiments** navigation item — it is not run from inside the Dataset flow.
+
+#### Create an experiment (`/experiments` → `+ New Experiment`)
+
+The creation wizard walks through four steps:
+
+1. **Define** — give the experiment a name and a hypothesis (e.g. "Adding explicit refund-handling instructions will reduce false refund claims").
+2. **Dataset** — pick the golden dataset. Both configurations will be evaluated against every scenario.
+3. **Configure** — define the **Baseline** (current configuration) and the **Candidate** (proposed configuration), each with a prompt and a model. Optionally enable the LLM judge (judge model, pass threshold, judge prompt).
+4. **Review** — review the full configuration, then click **Run Experiment**.
+
+#### What happens when you run an experiment
+
+- The configuration is **frozen** — the exact prompts, models, and evaluator settings are preserved as snapshots.
+- The Baseline and Candidate are both evaluated on the same dataset using the Phase-3 LLM judge.
+- You are taken to the Experiment Detail page, which shows progress while the run is active.
+
+#### Experiment Detail (`/experiments/:id`)
+
+This page answers "did my change improve the AI?" at a glance:
+
+- **Configuration comparison** — Baseline vs Candidate (prompt + model), with a "View prompts" toggle.
+- **Result summary** — Average score, pass rate, average latency, total tokens, and total cost for each configuration with signed deltas (candidate − baseline). Pass-rate deltas are shown in **percentage points (pp)**, not %.
+- **Criterion performance** — per-criterion average scores and deltas (e.g. Accuracy +9 pp, Completeness +3 pp).
+- **Scenario performance** — every scenario with Baseline → Candidate scores and pass changes. Regressions are highlighted in red.
+- **Regressions** — a dedicated panel listing every scenario or criterion where the candidate scored lower than the baseline.
+- **Evidence** — expand any scenario to inspect the input, golden answer, baseline/candidate outputs, and the judge's score for each.
+- **Decision** — choose **Promote Candidate**, **Keep Baseline**, or **Continue Experiment**, add a rationale, and save. The system provides evidence; the human makes the product decision.
+
+#### Experiment history
+
+Completed experiments remain on the `/experiments` list with their latest score/pass-rate deltas and the recorded decision, so the product team can revisit historical comparisons later.
+
+#### Reproducibility
+
+Because the configuration is snapshotted at run time, later changes to the dataset or source prompts **do not** alter historical experiment results. Each result also stores a raw response snapshot and model metadata for forensic debugging.
+
+#### Best practices
+
+- Start with a small dataset (6–12 test cases) to validate prompts and judge configuration before scaling.
+- Write a clear hypothesis so the experiment has a decision-relevant question.
+- When the candidate regresses on specific scenarios or criteria, inspect the raw evidence (golden answer, outputs, judge reasons) before deciding.
+- Use experiments for formal A/B comparisons where you expect to make a product decision; use the Playground for quick prompt exploration.
+
+#### Refinements: retry, evaluation config, recommendation, iterations
+
+- **Partial retry** — if some scenarios fail to evaluate (timeout, rate limit, evaluator error), the detail page shows an "Evaluation status" section with per-configuration completion counts and a **Retry failed scenarios** button. Retrying only re-runs the failed scenarios; successful results are never re-run or overwritten. A low judge score is a quality failure, not an execution failure — it is never retried.
+- **Evaluation configuration** — experiment creation has a dedicated **EVALUATION CONFIGURATION** section (Human judgement vs LLM-as-a-Judge, judge model, pass threshold, judge prompt). The evaluator is separate from the target model, and this is shown clearly on both the wizard and the detail page.
+- **Metric colors** — quality metrics (score, pass rate) are green when the candidate improves and red when it declines; operational metrics (latency, tokens, cost) are green when lower. Zero change is neutral.
+- **Criterion tooltips** — criteria such as Accuracy and Completeness show an ⓘ icon explaining their meaning.
+- **Recommendation** — the detail page shows an evidence-based **Recommendation** (Promote Candidate / Keep Baseline / Continue Experiment / Insufficient data) built from deterministic rules. It is advisory only — you still make the final decision.
+- **Iterations** — choosing **Continue Experiment** creates a **new iteration** (previous candidate becomes the new baseline) instead of overwriting results. Iterations are numbered and listed on the detail page; each is an immutable snapshot. If you change the evaluator configuration (or dataset) between iterations, a **comparability warning** is shown.
+- **Reproducibility** — each result stores a snapshot of the test-case input, golden answer, and rubric, so historical experiments keep showing the original benchmark even if the dataset changes later.
 
 ## Updating this manual
 

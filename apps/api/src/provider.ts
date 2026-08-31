@@ -55,10 +55,14 @@ function describeProviderError(error: unknown, retryCount: number): string {
 }
 
 class OpenRouterProvider implements ModelProvider {
-  private client = new OpenAI({
-    apiKey: process.env.OPENROUTER_API_KEY,
-    baseURL: process.env.OPENROUTER_BASE_URL || "https://openrouter.ai/api/v1",
-  });
+  private client: OpenAI;
+
+  constructor(opts?: { apiKey?: string; baseURL?: string }) {
+    this.client = new OpenAI({
+      apiKey: opts?.apiKey ?? process.env.OPENROUTER_API_KEY,
+      baseURL: (opts?.baseURL ?? process.env.OPENROUTER_BASE_URL) || "https://openrouter.ai/api/v1",
+    });
+  }
 
   async execute({ model, prompt, input }: { model: ModelId; prompt: string; input: string }) {
     let lastError: unknown;
@@ -89,6 +93,14 @@ class OpenRouterProvider implements ModelProvider {
 
     throw new Error(describeProviderError(lastError, retryCount));
   }
+}
+
+/**
+ * Creates a provider for a specific OpenRouter key (bring-your-own-key / per-user key).
+ * When no key is supplied, falls back to the server's OPENROUTER_API_KEY (owner/dev use).
+ */
+export function createProvider(opts?: { apiKey?: string; baseURL?: string }): ModelProvider {
+  return new OpenRouterProvider(opts);
 }
 
 export function getModelProvider(): ModelProvider {

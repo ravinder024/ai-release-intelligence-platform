@@ -18,6 +18,65 @@ enum ExecutionStatus {
   failed
 }
 
+enum ExperimentStatus {
+  draft
+  running
+  completed
+  partial_failure
+  failed
+}
+
+enum ExperimentDecision {
+  promote_candidate
+  keep_baseline
+  continue_experiment
+}
+
+model User {
+  id                     String   @id @default(uuid()) @db.Uuid
+  email                  String   @unique @db.VarChar(255)
+  passwordHash           String   @map("password_hash") @db.Text
+  displayName            String   @map("display_name") @db.VarChar(120)
+  openRouterKeyEncrypted String?  @map("open_router_key_encrypted") @db.Text
+  createdAt              DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt              DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  sessions            Session[]
+  passwordResetTokens PasswordResetToken[]
+  promptComparisons   PromptComparison[]
+  datasets            Dataset[]
+  evaluationRuns      EvaluationRun[]
+  experiments         Experiment[]
+
+  @@map("users")
+}
+
+model Session {
+  id        String   @id @default(uuid()) @db.Uuid
+  tokenHash String   @unique @map("token_hash") @db.VarChar(128)
+  userId    String   @map("user_id") @db.Uuid
+  expiresAt DateTime @map("expires_at") @db.Timestamptz(6)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("sessions")
+}
+
+model PasswordResetToken {
+  id        String    @id @default(uuid()) @db.Uuid
+  userId    String    @map("user_id") @db.Uuid
+  codeHash  String    @map("code_hash") @db.VarChar(128)
+  expiresAt DateTime  @map("expires_at") @db.Timestamptz(6)
+  usedAt    DateTime? @map("used_at") @db.Timestamptz(6)
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("password_reset_tokens")
+}
+
 model PromptComparison {
   id          String           @id @default(uuid()) @db.Uuid
   model       String           @db.VarChar(160)
@@ -25,9 +84,12 @@ model PromptComparison {
   status      ComparisonStatus @default(running)
   createdAt   DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
   completedAt DateTime?        @map("completed_at") @db.Timestamptz(6)
+  userId      String?          @map("user_id") @db.Uuid
+  user        User?            @relation(fields: [userId], references: [id], onDelete: Cascade)
   executions  PromptExecution[]
 
   @@index([createdAt(sort: Desc)])
+  @@index([userId])
   @@map("prompt_comparisons")
 }
 
@@ -60,10 +122,14 @@ model Dataset {
   isSample    Boolean           @default(false)
   createdAt   DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt   DateTime          @updatedAt @map("updated_at") @db.Timestamptz(6)
+  userId      String?           @map("user_id") @db.Uuid
+  user        User?             @relation(fields: [userId], references: [id], onDelete: Cascade)
   testCases   DatasetTestCase[]
   runs        EvaluationRun[]
+  experiments Experiment[]
 
   @@index([createdAt(sort: Desc)])
+  @@index([userId])
   @@map("datasets")
 }
 
@@ -87,6 +153,8 @@ model EvaluationRun {
   id                 String            @id @default(uuid()) @db.Uuid
   datasetId          String            @map("dataset_id") @db.Uuid
   model              String            @db.VarChar(160)
+  modelA             String?           @map("model_a") @db.VarChar(160)
+  modelB             String?           @map("model_b") @db.VarChar(160)
   promptA            String            @map("prompt_a") @db.Text
   promptB            String            @map("prompt_b") @db.Text
   evaluatorModel     String?           @map("evaluator_model") @db.VarChar(160)
@@ -95,10 +163,16 @@ model EvaluationRun {
   status             ComparisonStatus  @default(running)
   createdAt          DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
   completedAt        DateTime?         @map("completed_at") @db.Timestamptz(6)
+  // Optional link to an Experiment (Phase 4)
+  experimentId       String?           @map("experiment_id") @db.Uuid
+  experiment         Experiment?       @relation(fields: [experimentId], references: [id], onDelete: Cascade)
+  userId             String?           @map("user_id") @db.Uuid
+  user               User?             @relation(fields: [userId], references: [id], onDelete: Cascade)
   dataset            Dataset           @relation(fields: [datasetId], references: [id], onDelete: Cascade)
   results            EvaluationResult[]
 
   @@index([createdAt(sort: Desc)])
+  @@index([userId])
   @@map("evaluation_runs")
 }
 
@@ -109,6 +183,14 @@ model EvaluationResult {
   variant           String           @db.Char(1)
   prompt            String           @db.Text
   output            String?          @db.Text
+  // Snapshot of the provider response for reproducibility
+  responseSnapshot  Json?            @map("response_snapshot")
+  // Provider/model metadata at time of evaluation
+  modelMetadata     Json?            @map("model_metadata")
+  // Snapshot of the test case (input/golden/rubric) used at evaluation time
+  inputSnapshot           String?  @map("input_snapshot") @db.Text
+  expectedOutputSnapshot  String?  @map("expected_output_snapshot") @db.Text
+  criteriaSnapshot        Json?    @map("criteria_snapshot")
   latencyMs         Int?             @map("latency_ms")
   inputTokens       Int?             @map("input_tokens")
   outputTokens      Int?             @map("output_tokens")
@@ -145,6 +227,41 @@ model EvaluationJudgement {
   @@unique([resultId])
   @@index([resultId])
   @@map("evaluation_judgements")
+}
+
+model Experiment {
+  id                 String             @id @default(uuid()) @db.Uuid
+  name               String             @db.VarChar(160)
+  hypothesis         String?            @db.Text
+  datasetId          String             @map("dataset_id") @db.Uuid
+  baselinePrompt     String             @map("baseline_prompt") @db.Text
+  baselineModel      String             @map("baseline_model") @db.VarChar(160)
+  candidatePrompt    String             @map("candidate_prompt") @db.Text
+  candidateModel     String             @map("candidate_model") @db.VarChar(160)
+  evaluatorModel     String?            @map("evaluator_model") @db.VarChar(160)
+  evaluatorThreshold Int?               @map("evaluator_threshold")
+  evaluatorPrompt    String?            @map("evaluator_prompt") @db.Text
+  status             ExperimentStatus   @default(draft)
+  decision           ExperimentDecision?
+  decisionNote       String?            @map("decision_note") @db.Text
+  decidedAt          DateTime?          @map("decided_at") @db.Timestamptz(6)
+  createdAt          DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
+  // Iteration chain (Phase 4 refinement): iteration 1 is the root; "Continue
+  // Experiment" creates a child iteration with the previous candidate as baseline.
+  iteration          Int                @default(1) @map("iteration")
+  parentId           String?            @map("parent_id") @db.Uuid
+  parent             Experiment?        @relation("ExperimentTree", fields: [parentId], references: [id], onDelete: Cascade)
+  children           Experiment[]       @relation("ExperimentTree")
+  dataset            Dataset            @relation(fields: [datasetId], references: [id], onDelete: Cascade)
+  userId             String?            @map("user_id") @db.Uuid
+  user               User?              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  runs               EvaluationRun[]
+
+  @@index([createdAt(sort: Desc)])
+  @@index([parentId])
+  @@index([userId])
+  @@map("experiments")
 }
 
 model EvaluationCriterionResult {

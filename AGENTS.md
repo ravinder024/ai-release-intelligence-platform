@@ -20,10 +20,18 @@ Management thinking, not just software engineering.
   run both prompts across every scenario, watch a live progress bar, and read the
   results table (output, latency, tokens, cost). Sample "Customer Support"
   dataset (7 scenarios) seeded via `npm run db:seed`. Summary: `docs/phase2.md`.
-- **Phase 3 — AI Judge / Evaluation Metrics: planned, NOT started.** Discussion of
-  qualitative decision support is on hold until Phase 3 is reached.
-- **Phases 4–7:** Experiment tracking, human review, analytics, release
-  intelligence. Not started.
+- **Phase 3 — AI Judge / Evaluation Metrics: COMPLETE.** LLM-as-a-Judge scoring,
+  pass rates, criterion-level performance, regression detection.
+- **Phase 4 — Experiments & Release Intelligence: COMPLETE.** First-class
+  Experiments (draft -> baseline vs candidate -> run -> results -> recommendation),
+  partial-failure retry with model switching, iteration chains, comparability
+  warnings, product decision. Summary: `docs/PRDs/phase4_prd.md`.
+- **Phase 5 — Accounts (SSO): COMPLETE.** Username/password sign up, sign in,
+  forgot-password with an in-app reset code. Each user brings their own OpenRouter
+  key (encrypted on their account) and gets a private workspace (own datasets,
+  runs, experiments) alongside the shared read-only samples. In-app User Manual
+  menu item + README. Deployed to Contabo under `ai-evals-studio.duckdns.org`.
+- **Phases 6–7:** human review, analytics, deeper release intelligence. Not started.
 
 ## Phase 2 scope (agreed with the PM)
 
@@ -53,10 +61,16 @@ Management thinking, not just software engineering.
 
 - Monorepo: `apps/api` (Express + Prisma + PostgreSQL), `apps/web`
   (React + Vite), `packages/shared` (shared TypeScript contracts).
-- Models are called through **OpenRouter**, free models only:
-  `openai/gpt-oss-20b:free` and `google/gemma-4-31b-it:free`.
+- Models are called through **OpenRouter**, free models only (the list lives in `packages/shared/src/index.ts`; a healthy model is the default).
 - Provider adapter has retry-with-backoff for rate limits and friendly errors.
-- No auth, no analytics.
+- **Auth (Phase 5):** username/password SSO with httpOnly cookie sessions
+  (bcryptjs), in-app forgot-password reset codes (no email infra), per-user
+  OpenRouter keys encrypted at rest (AES-256-GCM via `ENCRYPTION_KEY`).
+  Multi-tenant: samples (`userId null`) shared/read-only; all user data is private.
+  `npm run db:prune` wipes user data + non-sample datasets (deploy cleanup).
+- The API server serves the built web app on a single port (default `5101`);
+  `GET /api/manual` serves the living User Manual (`docs/User manual.md`) for the
+  in-app Manual page.
 
 ## How to run locally
 

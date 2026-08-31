@@ -126,13 +126,15 @@ export function DatasetDetailPage() {
   if (error && !dataset) return <section className="intro"><p className="error">{error}</p><p><Link to="/datasets">Back to datasets</Link></p></section>;
   if (!dataset) return <section className="intro"><p>Loading…</p></section>;
 
+  const editable = Boolean(dataset.editable);
+
   return (
     <section>
       <div className="intro">
         <p className="eyebrow"><Link to="/datasets" className="back-link">DATASETS</Link> / {dataset.testCaseCount} SCENARIOS</p>
         <h1>{dataset.name}</h1>
         <div className="row-actions">
-          {!dataset.isSample ? (
+          {editable ? (
             <button className="danger" onClick={async () => {
               const confirmation = prompt('Type DELETE to confirm dataset deletion');
               if (confirmation !== 'DELETE') return;
@@ -147,12 +149,15 @@ export function DatasetDetailPage() {
               }
             }} disabled={busy}>Delete dataset</button>
           ) : (
-            <span title="This is a sample dataset and cannot be deleted." className="muted">Sample dataset — cannot delete</span>
+            <span title={dataset.isSample ? "This is a sample dataset and cannot be deleted." : "You can only edit your own datasets."} className="muted">
+              {dataset.isSample ? "Sample dataset — read only" : "Read only"}
+            </span>
           )}
         </div>
         {!isEditingMeta ? (
           <p>{dataset.description || "No description."} {dataset.useCase && <span className="badge">{dataset.useCase}</span>}</p>
         ) : (
+          editable && (
           <form onSubmit={saveMeta} className="panel inline-form">
             <label>Name<input value={metaForm.name} onChange={(e) => setMetaForm((c) => ({ ...c, name: e.target.value }))} required maxLength={160} /></label>
             <label>Use case<input value={metaForm.useCase} onChange={(e) => setMetaForm((c) => ({ ...c, useCase: e.target.value }))} maxLength={160} /></label>
@@ -162,6 +167,7 @@ export function DatasetDetailPage() {
               <button type="button" onClick={() => setIsEditingMeta(false)}>Cancel</button>
             </div>
           </form>
+          )
         )}
       </div>
 
@@ -173,6 +179,7 @@ export function DatasetDetailPage() {
 
       {error && dataset && <p className="error" role="alert">{error}</p>}
 
+      {editable ? (
       <form onSubmit={addScenario} className="panel scenario-form">
         <h3>Add a scenario</h3>
         <label>Question / input
@@ -191,6 +198,11 @@ export function DatasetDetailPage() {
         </label>
         <button type="submit" disabled={busy || scenarioForm.input.trim().length === 0}>Add scenario</button>
       </form>
+      ) : (
+        <div className="panel notice">
+          <p>This dataset is read-only{dataset.isSample ? " (shared sample)" : ""}. <Link to="/auth/login">Sign in</Link> to build your own datasets.</p>
+        </div>
+      )}
 
       {dataset.testCases.length === 0 ? (
         <div className="empty">No scenarios yet. Add your first example above.</div>
@@ -212,8 +224,8 @@ export function DatasetDetailPage() {
               ) : (
                 <>
                   <div className="scenario-head"><span className="scenario-num">#{testCase.position + 1}</span><div className="row-actions">
-                    <button onClick={() => startEdit(testCase)}>Edit</button>
-                    <button className="danger" onClick={() => removeScenario(testCase)} disabled={busy}>Delete</button>
+                    {editable && <button onClick={() => startEdit(testCase)}>Edit</button>}
+                    {editable && <button className="danger" onClick={() => removeScenario(testCase)} disabled={busy}>Delete</button>}
                   </div></div>
                   <p className="scenario-input">{testCase.input}</p>
                   {testCase.expectedOutput && <p className="scenario-meta"><strong>Expected:</strong> {testCase.expectedOutput}</p>}

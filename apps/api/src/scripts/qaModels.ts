@@ -1,5 +1,12 @@
 import { config as loadEnv } from "dotenv";
-loadEnv();
+import path from "path";
+import { fileURLToPath } from "url";
+
+// Ensure we load the repository root .env regardless of CWD when invoked from tooling
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const rootEnv = path.resolve(__dirname, "..", "..", "..", "..", ".env");
+loadEnv({ path: rootEnv });
 import { getModelProvider } from "../provider.js";
 import { supportedModels } from "@prompt-playground/shared";
 

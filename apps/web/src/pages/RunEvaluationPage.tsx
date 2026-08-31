@@ -98,7 +98,7 @@ export function RunEvaluationPage() {
                 </div>
               </label>
               <label>Judge prompt
-                <textarea value={evaluatorPrompt} onChange={(event) => setEvaluatorPrompt(event.target.value)} rows={4} />
+                <textarea value={evaluatorPrompt} onChange={(event) => setEvaluatorPrompt(event.target.value)} rows={6} />
               </label>
             </div>
           )}

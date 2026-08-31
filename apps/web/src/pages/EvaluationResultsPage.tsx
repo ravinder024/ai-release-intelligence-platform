@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { supportedModels, type EvaluationResult, type EvaluationRun, type ModelId } from "@prompt-playground/shared";
-import { api } from "../api";
+import { supportedModels, type EvaluationResult, type EvaluationRun, type Experiment, type ModelId } from "@prompt-playground/shared";
+import { api, getExperiment } from "../api";
 
 export function EvaluationResultsPage() {
   const { id } = useParams<{ id: string }>();
   const [run, setRun] = useState<EvaluationRun | null>(null);
+  const [experiment, setExperiment] = useState<Experiment | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -36,6 +37,15 @@ export function EvaluationResultsPage() {
     return () => { cancelled = true; if (timer) clearInterval(timer); };
   }, [load]);
 
+  useEffect(() => {
+    if (!run?.experimentId) { setExperiment(null); return; }
+    let cancelled = false;
+    getExperiment(run.experimentId)
+      .then((experiment) => { if (!cancelled) setExperiment(experiment); })
+      .catch(() => { if (!cancelled) setExperiment(null); });
+    return () => { cancelled = true; };
+  }, [run?.experimentId, run?.id]);
+
   if (error && !run) return <section className="intro"><p className="error">{error}</p><p><Link to="/datasets">Back to datasets</Link></p></section>;
   if (!run) return <section className="intro"><p>Loading…</p></section>;
 
@@ -51,6 +61,16 @@ export function EvaluationResultsPage() {
         <h1>How did both prompts do?</h1>
         <p>Dataset: <Link to={`/datasets/${run.datasetId}`} className="back-link">{run.datasetName}</Link> · {run.model}</p>
       </div>
+
+      {run.experimentId && experiment ? (
+        <div className="panel judge-summary">
+          <div className="judge-row">
+            <span className="judge-badge">Experiment</span>
+            <Link to="/experiments" className="back-link">{experiment.name}</Link>
+            {experiment.hypothesis ? <span className="judge-prompt">{truncate(experiment.hypothesis, 140)}</span> : null}
+          </div>
+        </div>
+      ) : null}
 
       {hasJudge ? (
         <div className="panel judge-summary">
@@ -196,6 +216,25 @@ function ResultCell({ result, model, label }: { result: EvaluationResult | undef
         </div>
       ) : null}
       <pre className="eval-output">{result.output || "No response returned."}</pre>
+      {result.responseSnapshot || result.modelMetadata ? (
+        <details className="snapshot-details">
+          <summary>Raw snapshot</summary>
+          <div className="snapshot-body">
+            {result.modelMetadata ? (
+              <div>
+                <strong>Model metadata</strong>
+                <pre>{JSON.stringify(result.modelMetadata, null, 2)}</pre>
+              </div>
+            ) : null}
+            {result.responseSnapshot ? (
+              <div>
+                <strong>Response snapshot</strong>
+                <pre>{JSON.stringify(result.responseSnapshot, null, 2)}</pre>
+              </div>
+            ) : null}
+          </div>
+        </details>
+      ) : null}
       <div className="eval-metrics">
         <span title="Latency">{result.latencyMs?.toLocaleString() ?? "—"} ms</span>
         <span title="Tokens">{result.totalTokens?.toLocaleString() ?? "—"} tokens</span>

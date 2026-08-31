@@ -24,10 +24,11 @@ export type ModelOutcome =
       error: string;
     };
 
-export async function runModel(model: ModelId, prompt: string, input: string): Promise<ModelOutcome> {
+export async function runModel(model: ModelId, prompt: string, input: string, providerOverride?: ModelProvider): Promise<ModelOutcome> {
+  const provider = providerOverride ?? getProvider();
   const startedAt = performance.now();
   try {
-    const result = await getProvider().execute({ model, prompt, input });
+    const result = await provider.execute({ model, prompt, input });
     const latencyMs = Math.round(performance.now() - startedAt);
     return {
       ok: true,

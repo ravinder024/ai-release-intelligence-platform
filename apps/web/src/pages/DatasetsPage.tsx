@@ -1,11 +1,13 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import type { Dataset, EvaluationRunSummary } from "@prompt-playground/shared";
+import { useAuth } from "../auth";
 import { api } from "../api";
 
 const emptyForm = { name: "", description: "", useCase: "" };
 
 export function DatasetsPage() {
+  const { user } = useAuth();
   const [datasets, setDatasets] = useState<Dataset[]>([]);
   const [runs, setRuns] = useState<EvaluationRunSummary[]>([]);
   const [showCreate, setShowCreate] = useState(false);
@@ -50,6 +52,8 @@ export function DatasetsPage() {
     }
   }
 
+  const canCreate = Boolean(user);
+
   return (
     <section>
       <div className="intro">
@@ -59,11 +63,22 @@ export function DatasetsPage() {
       </div>
 
       <div className="section-heading">
-        <div><p className="eyebrow">COLLECTIONS</p><h2>Your datasets</h2></div>
-        <button className="primary" onClick={() => setShowCreate((value) => !value)}>{showCreate ? "Cancel" : "New dataset"}</button>
+        <div>
+          <p className="eyebrow">COLLECTIONS</p>
+          <h2>{user ? "Your datasets" : "Sample datasets"}</h2>
+        </div>
+        {canCreate && (
+          <button className="primary" onClick={() => setShowCreate((value) => !value)}>{showCreate ? "Cancel" : "New dataset"}</button>
+        )}
       </div>
 
-      {showCreate && (
+      {!canCreate && (
+        <div className="panel notice">
+          <p>You're browsing the shared sample datasets. <Link to="/auth/signup">Create an account</Link> (or <Link to="/auth/login">sign in</Link>) to build your own datasets and run evaluations.</p>
+        </div>
+      )}
+
+      {canCreate && showCreate && (
         <form onSubmit={createDataset} className="panel create-form">
           <h3>Create a dataset</h3>
           <label>Name
@@ -86,7 +101,10 @@ export function DatasetsPage() {
         <div className="dataset-grid">
           {datasets.map((dataset) => (
             <article className="panel dataset-card" key={dataset.id}>
-              <div className="panel-title"><Link to={`/datasets/${dataset.id}`} className="dataset-name">{dataset.name}</Link></div>
+              <div className="panel-title">
+                <Link to={`/datasets/${dataset.id}`} className="dataset-name">{dataset.name}</Link>
+                {dataset.isSample && <span className="badge">Sample</span>}
+              </div>
               <p className="dataset-desc">{dataset.description || "No description."}</p>
               <div className="dataset-meta">
                 <span>{dataset.testCaseCount} scenario{dataset.testCaseCount === 1 ? "" : "s"}</span>
@@ -95,28 +113,30 @@ export function DatasetsPage() {
               </div>
               <div className="row-actions">
                 <Link to={`/datasets/${dataset.id}`}>Open</Link>
-                <Link to={`/datasets/${dataset.id}/evaluate`}>Run evaluation</Link>
+                {canCreate && <Link to={`/datasets/${dataset.id}/evaluate`}>Run evaluation</Link>}
               </div>
             </article>
           ))}
         </div>
       )}
 
-      <section className="history">
-        <div className="section-heading"><div><p className="eyebrow">RECENT EVALUATIONS</p><h2>Previous runs</h2></div></div>
-        {runs.length === 0 ? <div className="empty">No evaluations yet. Runs will appear here so you can revisit results.</div> : (
-          <div className="history-list">
-            {runs.map((run) => (
-              <Link className="history-item" key={run.id} to={`/evaluations/${run.id}`}>
-                <span>{new Date(run.createdAt).toLocaleString()}</span>
-                <span>{run.datasetName}</span>
-                <span>{run.model}</span>
-                <span className={`status ${run.status}`}>{run.status.replace("_", " ")}</span>
-              </Link>
-            ))}
-          </div>
-        )}
-      </section>
+      {user && (
+        <section className="history">
+          <div className="section-heading"><div><p className="eyebrow">RECENT EVALUATIONS</p><h2>Previous runs</h2></div></div>
+          {runs.length === 0 ? <div className="empty">No evaluations yet. Runs will appear here so you can revisit results.</div> : (
+            <div className="history-list">
+              {runs.map((run) => (
+                <Link className="history-item" key={run.id} to={`/evaluations/${run.id}`}>
+                  <span>{new Date(run.createdAt).toLocaleString()}</span>
+                  <span>{run.datasetName}</span>
+                  <span>{run.model}</span>
+                  <span className={`status ${run.status}`}>{run.status.replace("_", " ")}</span>
+                </Link>
+              ))}
+            </div>
+          )}
+        </section>
+      )}
     </section>
   );
 }
