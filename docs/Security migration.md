@@ -20,6 +20,14 @@ Repository code cannot revoke dashboard credentials. Before deploying:
    npm run db:invalidate-sessions
    ```
 
+8. Attribute legacy records that predate ownership enforcement:
+
+   ```bash
+   npm run db:backfill-ownership
+   ```
+
+   The script reports how many runs remain unattributed. Unowned legacy records are not readable by anonymous callers, so they stay private until reviewed.
+
 ## Production environment
 
 Required in production:
@@ -66,3 +74,28 @@ Required in production:
 ## SMTP
 
 SMTP is optional for the current Google authentication flow. It can be added later for password recovery or notifications without becoming a Google sign-in dependency.
+
+Configure only when email features are needed:
+
+- `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM`
+
+`apps/api/src/services/mailer.ts` exposes `isEmailEnabled()` and `sendMail()`. When SMTP is not configured, email features degrade gracefully and Google sign-in is unaffected. SMTP credentials are never logged.
+
+## BYOK display
+
+Settings shows only masked metadata for a stored key:
+
+- provider
+- masked value (for example `sk-••••••••••7abc`)
+- last updated date
+
+The raw key is accepted once over HTTPS, encrypted at rest, and never returned by any endpoint. Removal clears the encrypted value and its metadata.
+
+## Legacy records
+
+Some pre-Phase-5 runs and comparisons have no owner. They are:
+
+- not readable by anonymous callers
+- attributed where possible by `npm run db:backfill-ownership`
+- left untouched otherwise for manual review
+

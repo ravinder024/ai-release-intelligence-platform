@@ -4,12 +4,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { prisma } from "../prisma.js";
 import { encryptKey, decryptKey } from "../crypto.js";
-import { authRouter } from "../routes/auth.js";
-import { datasetsRouter } from "../routes/datasets.js";
-import { evaluationsRouter } from "../routes/evaluations.js";
-import { experimentsRouter } from "../routes/experiments.js";
-import { comparisonsRouter } from "../routes/comparisons.js";
-import { modelsRouter } from "../routes/models.js";
+import { createApp } from "../app.js";
 import { pruneData } from "../scripts/prune.js";
 
 let failures = 0;
@@ -24,21 +19,7 @@ function check(label: string, actual: unknown, expected: unknown) {
 }
 
 function buildApp() {
-  const app = express();
-  app.use(express.json());
-  app.use("/api", modelsRouter);
-  app.use("/api", authRouter);
-  app.use("/api", comparisonsRouter);
-  app.use("/api", datasetsRouter);
-  app.use("/api", evaluationsRouter);
-  app.use("/api", experimentsRouter);
-  app.get("/api/manual", (_req, res) => {
-    const manualPath = resolve(dirname(fileURLToPath(import.meta.url)), "../../../../docs/User manual.md");
-    if (!existsSync(manualPath)) return res.status(404).json({ error: "not found" });
-    res.setHeader("Content-Type", "text/markdown; charset=utf-8");
-    res.send(readFileSync(manualPath, "utf8"));
-  });
-  return app;
+  return createApp();
 }
 
 type Session = { cookie: string };
@@ -151,6 +132,41 @@ async function main() {
     // -- evaluations: anonymous create 401
     const anonEval = await request(base, { cookie: "" }, "/api/evaluations", "POST", { datasetId: datasetA.id, model: "nvidia/nemotron-3.5-lightning:free", promptA: "a", promptB: "b" });
     check("anonymous create run 401", anonEval.status, 401);
+
+    // -- BYOK metadata endpoint never exposes a raw key
+    const keyMetaEmpty = await request(base, sessionA, "/api/auth/key");
+    check("byok metadata unconfigured", (keyMetaEmpty.data as { configured?: boolean }).configured, false);
+    check("byok metadata hides key", (keyMetaEmpty.data as { maskedKey?: string | null }).maskedKey, null);
+    await prisma.user.update({
+      where: { id: (me.data as { id: string }).id },
+      data: { openRouterKeyEncrypted: "encrypted-placeholder", openRouterKeyLast4: "7abc", openRouterKeyUpdatedAt: new Date() },
+    });
+    const keyMetaSet = await request(base, sessionA, "/api/auth/key");
+    const keyBody = keyMetaSet.data as { configured?: boolean; maskedKey?: string | null };
+    check("byok metadata configured", keyBody.configured, true);
+    check("byok metadata masked", keyBody.maskedKey, "sk-••••••••••7abc");
+    check("byok never returns raw key", JSON.stringify(keyBody).includes("encrypted-placeholder"), false);
+
+    // -- usage endpoint is server-computed and safe
+    const usageA = await request(base, sessionA, "/api/usage");
+    const usageBody = usageA.data as { total?: number; used?: number; remaining?: number };
+    check("usage total is five", usageBody.total, 5);
+    check("usage starts unused", usageBody.used, 0);
+    check("usage remaining is five", usageBody.remaining, 5);
+    const anonUsage = await request(base, { cookie: "" }, "/api/usage");
+    check("anonymous usage 401", anonUsage.status, 401);
+
+    // -- admin-only endpoints reject normal and anonymous callers
+    const anonQa = await request(base, { cookie: "" }, "/api/models/qa");
+    check("anonymous model QA 401", anonQa.status, 401);
+    const userQa = await request(base, sessionB, "/api/models/qa");
+    check("normal user model QA 403", userQa.status, 403);
+    const userReconcile = await request(base, sessionB, "/api/admin/reconcile-runs", "POST", {});
+    check("normal user reconcile 403", userReconcile.status, 403);
+
+    // -- free-model policy rejects paid models at the API boundary
+    const paidModel = await request(base, sessionA, "/api/evaluations", "POST", { datasetId: datasetA.id, model: "openai/gpt-5", promptA: "a", promptB: "b" });
+    check("paid model rejected by API", paidModel.status, 400);
 
     // -- manual endpoint
     const manual = await request(base, { cookie: "" }, "/api/manual");

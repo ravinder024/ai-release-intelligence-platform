@@ -329,6 +329,25 @@ authRouter.post("/auth/reset-password", async (request, response, next) => {
   }
 });
 
+// GET /api/auth/key — return masked BYOK metadata only (never the raw key)
+authRouter.get("/auth/key", authRequired, async (request, response, next) => {
+  try {
+    const user = await prisma.user.findUnique({
+      where: { id: request.user!.id },
+      select: { openRouterKeyLast4: true, openRouterKeyUpdatedAt: true },
+    });
+    if (!user?.openRouterKeyLast4) return response.json({ configured: false, provider: null, maskedKey: null, lastUpdated: null });
+    return response.json({
+      configured: true,
+      provider: "OpenRouter",
+      maskedKey: `sk-••••••••••${user.openRouterKeyLast4}`,
+      lastUpdated: user.openRouterKeyUpdatedAt?.toISOString() ?? null,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // PUT /api/auth/key — store the signed-in user's OpenRouter key (encrypted), validated first
 authRouter.put("/auth/key", authRequired, async (request, response, next) => {
   try {
@@ -339,7 +358,11 @@ authRouter.put("/auth/key", authRequired, async (request, response, next) => {
     }
     await prisma.user.update({
       where: { id: request.user!.id },
-      data: { openRouterKeyEncrypted: encryptKey(payload.openRouterApiKey) },
+      data: {
+        openRouterKeyEncrypted: encryptKey(payload.openRouterApiKey),
+        openRouterKeyLast4: payload.openRouterApiKey.slice(-4),
+        openRouterKeyUpdatedAt: new Date(),
+      },
     });
     return response.json({ ok: true });
   } catch (error) {
@@ -352,7 +375,7 @@ authRouter.delete("/auth/key", authRequired, async (request, response, next) => 
   try {
     await prisma.user.update({
       where: { id: request.user!.id },
-      data: { openRouterKeyEncrypted: null },
+      data: { openRouterKeyEncrypted: null, openRouterKeyLast4: null, openRouterKeyUpdatedAt: null },
     });
     return response.json({ ok: true });
   } catch (error) {

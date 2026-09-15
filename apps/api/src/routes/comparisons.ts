@@ -67,7 +67,8 @@ comparisonsRouter.get("/comparisons/:id", optionalAuth, async (request, response
   try {
     const comparison = await findComparison(request.params.id);
     if (!comparison) return response.status(404).json({ error: "Comparison not found" });
-    if (comparison.userId !== (request.user?.id ?? null)) return response.status(404).json({ error: "Comparison not found" });
+    // Legacy records without an owner are not readable by anonymous callers.
+    if (!comparison.userId || comparison.userId !== request.user?.id) return response.status(404).json({ error: "Comparison not found" });
     return response.json(comparison);
   } catch (error) {
     return next(error);

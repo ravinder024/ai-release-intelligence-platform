@@ -218,6 +218,15 @@ h2 { font-size: 20px; } h3 { margin: 0 0 12px; font-size: 15px; }
 .usage-number { display: flex; align-items: baseline; gap: 10px; padding: 8px 0; }
 .usage-number strong { font-size: 34px; letter-spacing: -0.04em; color: #f5f5f6; }
 .usage-number span { color: #a6a6ad; font-size: 13px; }
+.detail-list { display: grid; gap: 8px; margin: 0; }
+.detail-list > div { display: flex; justify-content: space-between; gap: 12px; border-bottom: 1px solid #232427; padding-bottom: 6px; }
+.detail-list dt { color: #85858e; font-size: 12px; font-weight: 600; }
+.detail-list dd { margin: 0; color: #e9e9ec; font-size: 13px; text-align: right; overflow-wrap: anywhere; }
+.key-status { display: flex; align-items: baseline; gap: 10px; padding: 10px 12px; background: #111214; border: 1px solid #2b2c2f; border-radius: 8px; }
+.key-status-label { color: #85858e; font-size: 11px; font-weight: 700; letter-spacing: .08em; }
+.key-status-value { color: #d7d7dc; font-size: 13px; }
+.security-list { margin: 0; padding-left: 18px; display: grid; gap: 6px; }
+.security-list li { color: #a6a6ad; font-size: 13px; line-height: 1.5; }
 .success { color: #8ff7c5; font-size: 13px; margin: 0; }
 .danger { color: #ffb1ae; background: #2a2022; border: 1px solid #5a3033; padding: 9px 14px; border-radius: 6px; font-weight: 650; cursor: pointer; }
 .danger:hover { background: #3a2022; }

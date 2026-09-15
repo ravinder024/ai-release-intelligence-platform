@@ -49,6 +49,8 @@ model User {
   passwordHash           String?  @map("password_hash") @db.Text
   displayName            String   @map("display_name") @db.VarChar(120)
   openRouterKeyEncrypted String?  @map("open_router_key_encrypted") @db.Text
+  openRouterKeyLast4     String?  @map("open_router_key_last4") @db.VarChar(8)
+  openRouterKeyUpdatedAt DateTime? @map("open_router_key_updated_at") @db.Timestamptz(6)
   role                   UserRole @default(user)
   emailVerified          Boolean  @default(false) @map("email_verified")
   lastLoginAt            DateTime? @map("last_login_at") @db.Timestamptz(6)

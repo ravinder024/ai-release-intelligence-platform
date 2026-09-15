@@ -132,7 +132,8 @@ evaluationsRouter.get("/evaluations/:id", optionalAuth, async (request, response
   try {
     const run = await findRun(request.params.id);
     if (!run) return response.status(404).json({ error: "Evaluation run not found" });
-    if (run.userId !== (request.user?.id ?? null)) return response.status(404).json({ error: "Evaluation run not found" });
+    // Legacy records without an owner are not readable by anonymous callers.
+    if (!run.userId || run.userId !== request.user?.id) return response.status(404).json({ error: "Evaluation run not found" });
     return response.json(run);
   } catch (error) {
     return next(error);
