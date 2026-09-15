@@ -24,7 +24,7 @@ function close(label: string, actual: number | null | undefined, expected: numbe
 
 const BASELINE_MODEL = "nvidia/nemotron-3-super-120b-a12b:free";
 const CANDIDATE_MODEL = "google/gemma-4-31b-it:free";
-const EVALUATOR_MODEL = "nvidia/nemotron-3-ultra-550b-a55b:free";
+const EVALUATOR_MODEL = "nvidia/nemotron-3.5-lightning:free";
 
 /**
  * Deterministic fake provider. Baseline/candidate return fixed model outputs;

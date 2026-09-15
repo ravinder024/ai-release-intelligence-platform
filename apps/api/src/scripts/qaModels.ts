@@ -29,7 +29,7 @@ export async function runModelQa() {
   return results;
 }
 
-if (process.argv[1] && process.argv[1].endsWith("qaModels.ts")) {
+if (process.argv[1] && (process.argv[1].endsWith("qaModels.ts") || process.argv[1].endsWith("qaModels.js"))) {
   (async () => {
     try {
       const res = await runModelQa();

@@ -18,7 +18,7 @@ async function run() {
   };
 
   const res1 = await judgeResult({
-    evaluatorModel: "nvidia/nemotron-3-ultra-550b-a55b:free",
+    evaluatorModel: "nvidia/nemotron-3.5-lightning:free",
     evaluatorPrompt: null,
     input: "input",
     response: "resp",
@@ -43,7 +43,7 @@ async function run() {
   };
 
   const res2 = await judgeResult({
-    evaluatorModel: "nvidia/nemotron-3-ultra-550b-a55b:free",
+    evaluatorModel: "nvidia/nemotron-3.5-lightning:free",
     evaluatorPrompt: null,
     input: "input",
     response: "resp",
@@ -66,7 +66,7 @@ async function run() {
   };
 
   const res3 = await judgeResult({
-    evaluatorModel: "nvidia/nemotron-3-ultra-550b-a55b:free",
+    evaluatorModel: "nvidia/nemotron-3.5-lightning:free",
     evaluatorPrompt: null,
     input: "input",
     response: "resp",

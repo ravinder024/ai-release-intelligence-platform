@@ -1,9 +1,9 @@
-// Ordered list of supported free models. A healthy, general-purpose model is first so
-// it becomes the default selection; models that OpenRouter returns 404 for are removed.
+// Ordered list of supported free models. The first model is the default selection;
+// models with unreliable or malformed OpenRouter responses are excluded.
 export const supportedModels = [
   {
-    id: "nvidia/nemotron-3-ultra-550b-a55b:free",
-    label: "NVIDIA: Nemotron 3 Ultra (free)",
+    id: "nvidia/nemotron-3.5-lightning:free",
+    label: "NVIDIA: Nemotron 3.5 Lightning (free)",
     inputCostPerMillion: 0,
     outputCostPerMillion: 0,
   },
@@ -16,12 +16,6 @@ export const supportedModels = [
   {
     id: "poolside/laguna-s-2.1:free",
     label: "Poolside: Laguna S 2.1 (free)",
-    inputCostPerMillion: 0,
-    outputCostPerMillion: 0,
-  },
-  {
-    id: "nvidia/nemotron-3.5-lightning:free",
-    label: "NVIDIA: Nemotron 3.5 Lightning (free)",
     inputCostPerMillion: 0,
     outputCostPerMillion: 0,
   },
@@ -46,12 +40,6 @@ export const supportedModels = [
   {
     id: "dots-studio/dots-3-note-preview:free",
     label: "Dots Studio: Dots3-Note Preview (free)",
-    inputCostPerMillion: 0,
-    outputCostPerMillion: 0,
-  },
-  {
-    id: "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
-    label: "NVIDIA: Nemotron 3 Nano Omni (free)",
     inputCostPerMillion: 0,
     outputCostPerMillion: 0,
   },

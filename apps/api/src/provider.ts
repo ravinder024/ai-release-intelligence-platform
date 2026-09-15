@@ -78,8 +78,14 @@ class OpenRouterProvider implements ModelProvider {
           ],
         });
 
+        const choice = response.choices?.[0];
+        const content = choice?.message?.content;
+        if (typeof content !== "string" || content.trim().length === 0) {
+          throw new Error(`Model ${model} returned no usable chat completion.`);
+        }
+
         return {
-          output: response.choices[0]?.message.content || "No response returned.",
+          output: content,
           inputTokens: response.usage?.prompt_tokens ?? 0,
           outputTokens: response.usage?.completion_tokens ?? 0,
         };

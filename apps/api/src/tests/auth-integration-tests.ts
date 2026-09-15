@@ -149,7 +149,7 @@ async function main() {
     }
 
     // -- evaluations: anonymous create 401
-    const anonEval = await request(base, { cookie: "" }, "/api/evaluations", "POST", { datasetId: datasetA.id, model: "nvidia/nemotron-3-ultra-550b-a55b:free", promptA: "a", promptB: "b" });
+    const anonEval = await request(base, { cookie: "" }, "/api/evaluations", "POST", { datasetId: datasetA.id, model: "nvidia/nemotron-3.5-lightning:free", promptA: "a", promptB: "b" });
     check("anonymous create run 401", anonEval.status, 401);
 
     // -- manual endpoint

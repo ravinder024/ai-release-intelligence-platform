@@ -3,7 +3,7 @@ import { supportedModels, type Comparison, type CreateComparisonRequest, type Mo
 import { api } from "../api";
 
 const initialRequest: CreateComparisonRequest = {
-  model: "nvidia/nemotron-3-ultra-550b-a55b:free",
+  model: "nvidia/nemotron-3.5-lightning:free",
   input: "A customer says their monthly invoice is unexpectedly higher than usual. Draft a helpful response.",
   promptA: "You are a concise support assistant. Explain the likely next step in no more than 100 words.",
   promptB: "You are an empathetic support assistant. Acknowledge the concern, explain the likely next step, and offer a clear path to resolution.",
