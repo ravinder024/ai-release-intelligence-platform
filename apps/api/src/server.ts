@@ -12,6 +12,9 @@ import { evaluationsRouter } from "./routes/evaluations.js";
 import { modelsRouter } from "./routes/models.js";
 import { experimentsRouter } from "./routes/experiments.js";
 import { authRouter } from "./routes/auth.js";
+import { adminRequired } from "./auth.js";
+import { bootstrapAdmin } from "./adminBootstrap.js";
+import { FreeEvaluationLimitError } from "./services/usage.js";
 import { prisma } from "./prisma.js";
 
 const currentDirectory = dirname(fileURLToPath(import.meta.url));
@@ -21,7 +24,28 @@ dotenv.config({ path: resolve(currentDirectory, "../../../.env") });
 const app = express();
 const port = Number(process.env.PORT ?? 5101);
 
-app.use(cors({ origin: true, credentials: true }));
+function validateProductionConfig(): void {
+  if (process.env.NODE_ENV !== "production") return;
+  const required = [
+    "DATABASE_URL",
+    "ENCRYPTION_KEY",
+    "SESSION_COOKIE_SECRET",
+    "ADMIN_INITIAL_PASSWORD",
+    "GOOGLE_CLIENT_ID",
+    "GOOGLE_CLIENT_SECRET",
+    "GOOGLE_CALLBACK_URL",
+    "ALLOWED_ORIGINS",
+    "OPENROUTER_API_KEY",
+  ];
+  const missing = required.filter((name) => !process.env[name]?.trim());
+  if (missing.length > 0) throw new Error(`Missing required production configuration: ${missing.join(", ")}`);
+}
+
+const allowedOrigins = (process.env.ALLOWED_ORIGINS ?? "http://localhost:5101")
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+app.use(cors({ origin: allowedOrigins, credentials: true }));
 app.use(express.json({ limit: "1mb" }));
 
 app.get("/health", (_request, response) => response.json({
@@ -70,12 +94,16 @@ if (existsSync(webDist)) {
 
 app.use((error: unknown, _request: express.Request, response: express.Response, _next: express.NextFunction) => {
   if (error instanceof z.ZodError) return response.status(400).json({ error: "Invalid request", details: error.flatten() });
+  if (error instanceof FreeEvaluationLimitError) return response.status(429).json({ error: error.message, code: "FREE_EVALUATION_LIMIT_REACHED" });
   if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2025") {
     return response.status(404).json({ error: "Resource not found" });
   }
   console.error(error);
   return response.status(500).json({ error: "Unexpected server error" });
 });
+
+validateProductionConfig();
+await bootstrapAdmin();
 
 app.listen(port, () => {
   console.log(`Prompt Playground API listening on http://localhost:${port}`);
@@ -98,7 +126,7 @@ async function recoverStaleRuns() {
 }
 
 // Admin endpoint to trigger reconciliation manually
-app.post('/api/admin/reconcile-runs', async (_req, res) => {
+app.post('/api/admin/reconcile-runs', adminRequired, async (_req, res) => {
   try {
     await recoverStaleRuns();
     return res.json({ ok: true });

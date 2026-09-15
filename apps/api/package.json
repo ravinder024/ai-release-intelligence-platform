@@ -11,7 +11,8 @@
     "prisma:migrate": "prisma migrate dev",
     "db:seed": "prisma db seed",
     "db:prune": "npm run build && node dist/scripts/prune.js",
-    "test": "npm run build && node dist/tests/run-evaluator-tests.js && node dist/tests/metrics-tests.js",
+    "db:invalidate-sessions": "npm run build && node dist/scripts/invalidateSessions.js",
+    "test": "npm run build && node dist/tests/run-evaluator-tests.js && node dist/tests/metrics-tests.js && node dist/tests/security-tests.js",
     "test:integration": "npm run build && node dist/tests/auth-integration-tests.js && node dist/tests/experiments-integration-tests.js"
   },
   "prisma": {
@@ -25,6 +26,7 @@
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "openai": "^4.81.0",
+    "openid-client": "^6.8.8",
     "zod": "^3.24.1"
   },
   "devDependencies": {

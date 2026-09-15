@@ -52,6 +52,12 @@ export const supportedModels = [
 ] as const;
 
 export type ModelId = (typeof supportedModels)[number]["id"];
+
+/** Runtime allowlist predicate for the application's free-only model policy. */
+export function isSupportedFreeModel(model: string): model is ModelId {
+  return model.endsWith(":free") && supportedModels.some((item) => item.id === model);
+}
+
 export type ComparisonStatus = "running" | "completed" | "partial_failure";
 export type ExecutionStatus = "completed" | "failed";
 

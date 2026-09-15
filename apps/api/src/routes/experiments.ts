@@ -2,7 +2,8 @@ import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../prisma.js";
 import { executeRun, findRun, type TestCase } from "./evaluations.js";
-import { getUserProvider } from "../services/userProvider.js";
+import { getUserProvider, resolveUserProvider } from "../services/userProvider.js";
+import { attachReservationToRun, releasePlatformCredit } from "../services/usage.js";
 import { authRequired, optionalAuth } from "../auth.js";
 import {
   aggregateVariant,
@@ -173,16 +174,25 @@ experimentsRouter.patch("/experiments/:id/decision", authRequired, async (req, r
 
 // POST /api/experiments/:id/run — freeze config and run baseline (A) vs candidate (B) on the dataset
 experimentsRouter.post("/experiments/:id/run", authRequired, async (req, res, next) => {
+  let reservationId: string | undefined;
   try {
     const existing = await prisma.experiment.findUnique({ where: { id: req.params.id }, select: { userId: true } });
     if (!existing) return res.status(404).json({ error: "Experiment not found" });
     if (existing.userId !== req.user!.id) return res.status(404).json({ error: "Experiment not found" });
-    const provider = await getUserProvider(req.user!.id);
-    const result = await startExperimentRun(req.params.id, { provider });
-    if (result === null) return res.status(404).json({ error: "Experiment not found" });
-    if (result === "conflict") return res.status(409).json({ error: "Experiment is already running" });
+    const resolvedProvider = await resolveUserProvider(req.user!.id, "experiment");
+    reservationId = resolvedProvider.reservationId;
+    const result = await startExperimentRun(req.params.id, { provider: resolvedProvider.provider, reservationId: resolvedProvider.reservationId });
+    if (result === null) {
+      if (reservationId) await releasePlatformCredit(reservationId);
+      return res.status(404).json({ error: "Experiment not found" });
+    }
+    if (result === "conflict") {
+      if (reservationId) await releasePlatformCredit(reservationId);
+      return res.status(409).json({ error: "Experiment is already running" });
+    }
     res.status(201).json(result);
   } catch (err) {
+    if (reservationId) await releasePlatformCredit(reservationId).catch(() => undefined);
     next(err);
   }
 });
@@ -364,7 +374,7 @@ export async function retryExperimentFailures(
  */
 export async function startExperimentRun(
   experimentId: string,
-  opts?: { provider?: import("../provider.js").ModelProvider; awaitRun?: boolean },
+  opts?: { provider?: import("../provider.js").ModelProvider; awaitRun?: boolean; reservationId?: string },
 ) {
   const experiment = await prisma.experiment.findUnique({
     where: { id: experimentId },
@@ -394,9 +404,11 @@ export async function startExperimentRun(
       evaluatorModel: experiment.evaluatorModel,
       evaluatorThreshold: experiment.evaluatorThreshold,
       evaluatorPrompt: experiment.evaluatorPrompt,
+      userId: experiment.userId,
       status: "running",
     },
   });
+  if (opts?.reservationId) await attachReservationToRun(opts.reservationId, run.id);
 
   await prisma.experiment.update({ where: { id: experiment.id }, data: { status: "running" } });
 
@@ -412,6 +424,7 @@ export async function startExperimentRun(
     evaluatorThreshold: experiment.evaluatorThreshold,
     evaluatorPrompt: experiment.evaluatorPrompt,
     provider: opts?.provider,
+    reservationId: opts?.reservationId,
   });
 
   if (opts?.awaitRun) await runPromise;

@@ -10,7 +10,7 @@ Built as a portfolio case study demonstrating AI Product Management thinking end
 - **Phase 2 — Dataset Evaluation:** create datasets of test scenarios, run both prompts across every scenario with a live progress bar, and read the results table (output, latency, tokens, cost).
 - **Phase 3 — AI Judge / Evaluation Metrics:** LLM-as-a-Judge scoring, pass rates, criterion-level performance, and regression detection.
 - **Phase 4 — Experiments & Release Intelligence:** first-class Experiments (draft → baseline vs candidate → run → results → recommendation), partial-failure retry with model switching, iteration chains, comparability warnings, and a product decision (promote / keep / continue).
-- **Phase 5 — Accounts (SSO):** sign up / sign in / forgot-password with an in-app reset code. Each user brings their **own OpenRouter key** (stored encrypted on their account) and gets a **private workspace** — their own datasets, runs, and experiments — alongside the shared sample datasets.
+- **Phase 5 — Accounts & public hardening:** Google OIDC sign-in, secure server sessions, emergency local Admin bootstrap, private workspaces, five platform-funded free evaluations, encrypted optional BYOK, and server-enforced free-model policy.
 
 > 📖 Full end-user guidance lives in the **[User Manual](docs/User%20manual.md)**.
 
@@ -78,6 +78,7 @@ Requirements: Node.js 18+, PostgreSQL running locally.
 - [Phase 4 PRD](docs/PRDs/phase4_prd.md) — Experiments / Release Intelligence requirements
 - [Roadmap](docs/Roadmap.md) — phased product plan
 - [Architecture](docs/Architecture.md) — technical design
+- [Security migration](docs/Security%20migration.md) — credential revocation, Google setup, Admin bootstrap, quota, and free-model safeguards
 - [Implementation notes](docs/implementation/) — per-feature implementation details
 
 ## Deploying

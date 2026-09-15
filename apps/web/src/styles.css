@@ -188,6 +188,10 @@ h2 { font-size: 20px; } h3 { margin: 0 0 12px; font-size: 15px; }
 .auth-form .hint { margin: 4px 0 0; color: #777780; font-size: 11px; }
 .auth-form .primary { justify-self: start; }
 .auth-links { display: flex; gap: 16px; flex-wrap: wrap; border-top: 1px solid #2b2c2f; padding-top: 14px; }
+.google-button { width: 100%; color: #17181a; background: #f2f2f2; border: 1px solid #f2f2f2; padding: 10px 12px; border-radius: 6px; font-weight: 700; cursor: pointer; }
+.google-button:hover { background: #ffffff; }
+.auth-divider { display: flex; align-items: center; gap: 10px; color: #777780; font-size: 11px; text-transform: uppercase; letter-spacing: .08em; }
+.auth-divider::before, .auth-divider::after { content: ""; height: 1px; background: #2b2c2f; flex: 1; }
 .auth-links a { color: #d7d7dc; font-size: 13px; text-decoration: none; }
 .auth-links a:hover { text-decoration: underline; }
 .auth-done { display: grid; gap: 12px; justify-items: start; }
@@ -211,6 +215,9 @@ h2 { font-size: 20px; } h3 { margin: 0 0 12px; font-size: 15px; }
 .settings-card { padding: 20px; display: grid; gap: 12px; align-content: start; }
 .settings-card h2 { font-size: 16px; }
 .settings-card .muted { color: #a6a6ad; font-size: 13px; line-height: 1.5; margin: 0; }
+.usage-number { display: flex; align-items: baseline; gap: 10px; padding: 8px 0; }
+.usage-number strong { font-size: 34px; letter-spacing: -0.04em; color: #f5f5f6; }
+.usage-number span { color: #a6a6ad; font-size: 13px; }
 .success { color: #8ff7c5; font-size: 13px; margin: 0; }
 .danger { color: #ffb1ae; background: #2a2022; border: 1px solid #5a3033; padding: 9px 14px; border-radius: 6px; font-weight: 650; cursor: pointer; }
 .danger:hover { background: #3a2022; }

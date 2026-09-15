@@ -1,5 +1,7 @@
 import { Router } from "express";
 import { supportedModels } from "@prompt-playground/shared";
+import { adminRequired } from "../auth.js";
+import { rateLimit } from "../rateLimit.js";
 
 export const modelsRouter = Router();
 
@@ -14,13 +16,13 @@ modelsRouter.get("/models/free", (_request, response) => {
 // Simple in-memory cache of the last QA run (timestamp + results)
 let lastQaRun: { at: number; results: any[] } | null = null;
 
-modelsRouter.get("/models/qa", (_request, response) => {
+modelsRouter.get("/models/qa", adminRequired, (_request, response) => {
 	if (!lastQaRun) return response.status(404).json({ error: "No QA results available. Run POST /models/qa/run to start a check." });
 	return response.json(lastQaRun);
 });
 
 // Trigger a QA run asynchronously (requires OPENROUTER_API_KEY and network access)
-modelsRouter.post("/models/qa/run", async (request, response) => {
+modelsRouter.post("/models/qa/run", adminRequired, rateLimit({ name: "model-qa", windowMs: 60_000, max: 2 }), async (request, response) => {
 	// Spawn the QA script as a background job if available; for now, return accepted and run the script inline (best-effort).
 	void (async () => {
 		try {

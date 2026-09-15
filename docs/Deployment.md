@@ -144,3 +144,37 @@ Certbot automatically installs the certificate and redirects HTTP → HTTPS. Ren
 - `ENCRYPTION_KEY` / `SESSION_COOKIE_SECRET` must be stable — changing them invalidates stored keys/sessions.
 - `.env` is gitignored; never commit it.
 - Each user's OpenRouter key is encrypted at rest and only used for their own requests.
+
+
+Next: deploy to Contabo (needs you on the server)
+The app is running locally on http://localhost:5101 right now for you to try. The remaining step is on your Contabo box (213.136.66.153), since I can't SSH from here. Follow Deployment.md — the short version:
+
+1. git clone the repo to /var/www/arip, write .env (DATABASE_URL, PORT=5101, ENCRYPTION_KEY, SESSION_COOKIE_SECRET, OPENROUTER_API_KEY="", NODE_ENV=production)
+2. npm ci && npm run build && npx prisma migrate deploy && npm run db:seed && npm run db:prune
+3. Create the arip.service systemd unit (config in the doc) and start it
+4. Add the nginx site for ai-evals-studio.duckdns.org → 127.0.0.1:5101, then certbot --nginx -d ai-evals-studio.duckdns.org
+
+Then open https://ai-evals-studio.duckdns.org, sign up, save your key in Settings, and run your first experiment.
+
+One note: ENCRYPTION_KEY and SESSION_COOKIE_SECRET must be generated once and kept stable on the server (changing them invalidates stored keys/sessions). If you want, I can also add a GitHub Actions workflow to auto-deploy on push — just say the word.
+
+10:21 AM
+
+## Public hardening preflight
+
+Before applying the public-auth/quota migration:
+
+1. Back up PostgreSQL.
+2. Revoke the current OpenRouter platform key in the OpenRouter dashboard, then remove it from server `.env`. Do not put the replacement key in Git.
+3. Revoke any old Google OAuth client in Google Cloud Console and configure the replacement values through deployment secrets only.
+4. Invalidate existing application sessions after the backup:
+
+    ```bash
+    npm run db:invalidate-sessions
+    ```
+
+5. Set `ADMIN_INITIAL_PASSWORD` only in the server environment. The application bootstraps the emergency Admin account (`ravinderk.jobs@gmail.com`) without logging or returning the password.
+6. Set `NODE_ENV=production`, `ALLOWED_ORIGINS=https://ai-evals-studio.duckdns.org`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, and `GOOGLE_CALLBACK_URL`.
+7. Keep `OPENROUTER_API_KEY` empty until a newly issued platform key is intentionally enabled for the server-side five-evaluation credit path.
+
+The application enforces the configured free-model allowlist at the provider boundary. Paid or unknown OpenRouter model IDs are rejected even if an invalid value reaches an internal execution path.

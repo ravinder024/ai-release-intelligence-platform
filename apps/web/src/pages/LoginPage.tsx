@@ -30,6 +30,10 @@ export function LoginPage() {
         <p className="eyebrow">WELCOME BACK</p>
         <h1>Sign in</h1>
         <p className="muted">Use your own account and OpenRouter key to run evaluations.</p>
+        <button className="google-button" type="button" onClick={() => { window.location.href = "/api/auth/google"; }}>
+          Continue with Google
+        </button>
+        <div className="auth-divider"><span>or emergency admin login</span></div>
         <form onSubmit={submit} className="auth-form">
           <label>Email
             <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required autoComplete="email" />

@@ -18,16 +18,17 @@ The whole product runs on a single port (`5101`). The API server also serves the
    - `npm run dev` (builds both apps and starts the server)
    - Open the app in the browser at `http://localhost:5101`.
 2. Ensure `DATABASE_URL` is configured in the root `.env` (`PORT=5101`), plus `ENCRYPTION_KEY` and `SESSION_COOKIE_SECRET`.
-3. **Create an account** (or sign in) and add your own OpenRouter key in **Settings**. Each user brings their own key — the host's key is never used for your calls.
+3. **Continue with Google** to create/sign in to an account. You receive five platform-funded free evaluations before BYOK is required.
 4. Use the `Datasets` page to create benchmark datasets and evaluate prompt quality.
 
 > Port notes: the app always runs on `5101`. Before starting, stop any other Node servers so no other app ports (e.g. `3001`, `5173`) are in use.
 
 ## Accounts & your private workspace
 
-- **Sign up / Sign in:** open the landing page and choose **Create an account** (name, email, password) or **Sign in**. Sessions use a secure httpOnly cookie.
-- **Forgot password:** on the sign-in page choose *Forgot password?*, enter your email, and use the one-time reset code shown on screen to set a new password.
-- **Your OpenRouter key:** go to **Settings → Your OpenRouter key** and save it. It is validated, then encrypted and stored on your account; it is used only for model calls you make.
+- **Sign in:** public users choose **Continue with Google**. The application stores the Google issuer/subject identity mapping, not provider tokens in the browser. The local password login is reserved for the emergency Admin account.
+- **Free evaluations:** each account receives five complete platform-funded evaluation runs. A run can cover many scenarios; it counts as one evaluation. Invalid requests and fully failed infrastructure runs do not consume a credit.
+- **Your OpenRouter key:** BYOK is optional. After free credits are exhausted, go to **Settings → Your OpenRouter key** and save it. It is validated, encrypted at rest, never displayed again, and used only for your requests.
+- **Free models only:** the platform rejects paid or unknown OpenRouter model IDs server-side.
 - **Private workspace:** your datasets, evaluations, and experiments are visible only to you. The two sample datasets (Customer Support, Travel - Flights) are shared and read-only for everyone.
 - **Sign out:** use **Settings → Sign out** or the top-right menu.
 
@@ -121,7 +122,7 @@ Human review and future scope:
 
 ## What this platform does not do yet
 
-The platform now includes accounts and private workspaces, but still does not provide email-based password reset (reset codes are shown in-app), role-based access / admin, reviewer queues, dashboards, or built-in hallucination detection.
+The platform now includes Google-first accounts, an emergency Admin role, private workspaces, server-side usage limits, and encrypted optional BYOK. SMTP email is optional and is not required for the current Google sign-in flow. Reviewer queues, dashboards, and built-in hallucination detection remain future work.
 
 Those features are planned for later phases.
 
@@ -131,7 +132,7 @@ Those features are planned for later phases.
 - Phase 2: complete — dataset evaluation, benchmark scenarios, saved runs.
 - Phase 3: complete — automated LLM judging and per-criterion scoring.
 - Phase 4: complete — experiments and reproducible snapshots.
-- Phase 5: complete — accounts (SSO), per-user OpenRouter keys, private workspaces, in-app User Manual.
+- Phase 5: in progress — Google OIDC hardening, secure sessions, Admin bootstrap, five free evaluations, optional BYOK, and free-model enforcement.
 
 ### Phase 4 workflow: experiments and decisions
 

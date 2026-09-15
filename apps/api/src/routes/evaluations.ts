@@ -3,10 +3,12 @@ import { z } from "zod";
 import { prisma } from "../prisma.js";
 import { runModel } from "../services/execution.js";
 import { judgeResult } from "../services/evaluator.js";
-import { getUserProvider } from "../services/userProvider.js";
+import { resolveUserProvider } from "../services/userProvider.js";
+import { attachReservationToRun, settlePlatformCredit } from "../services/usage.js";
 import { authRequired, optionalAuth } from "../auth.js";
 import { supportedModels, type EvaluationResult, type EvaluationRun, type EvaluationRunSummary, type ModelId } from "@prompt-playground/shared";
 import type { ModelOutcome } from "../services/execution.js";
+import { rateLimit } from "../rateLimit.js";
 
 const modelIds = supportedModels.map(({ id }) => id) as [ModelId, ...ModelId[]];
 
@@ -31,8 +33,10 @@ const MAX_ATTEMPTS = Number(process.env.EVAL_MAX_ATTEMPTS ?? 2);
 const runCancellation = new Map<string, boolean>();
 
 export const evaluationsRouter = Router();
+evaluationsRouter.use(rateLimit({ name: "evaluations", windowMs: 60_000, max: 20 }));
 
 evaluationsRouter.post("/evaluations", authRequired, async (request, response, next) => {
+  let reservationId: string | undefined;
   try {
     const payload = runEvaluationSchema.parse(request.body);
     const dataset = await prisma.dataset.findUnique({
@@ -45,7 +49,8 @@ evaluationsRouter.post("/evaluations", authRequired, async (request, response, n
       return response.status(404).json({ error: "Dataset not found" });
     }
 
-    const provider = await getUserProvider(request.user!.id);
+    const resolvedProvider = await resolveUserProvider(request.user!.id, "evaluation");
+    reservationId = resolvedProvider.reservationId;
 
     const run = await prisma.evaluationRun.create({
       data: {
@@ -63,6 +68,9 @@ evaluationsRouter.post("/evaluations", authRequired, async (request, response, n
         status: "running",
       },
     });
+    if (resolvedProvider.reservationId) {
+      await attachReservationToRun(resolvedProvider.reservationId, run.id);
+    }
 
     // register cancellation flag for this run (cooperative cancellation)
     runCancellation.set(run.id, false);
@@ -89,11 +97,13 @@ evaluationsRouter.post("/evaluations", authRequired, async (request, response, n
       evaluatorModel: payload.evaluatorModel,
       evaluatorThreshold: payload.evaluatorThreshold ?? null,
       evaluatorPrompt: payload.evaluatorPrompt ?? null,
-      provider,
+      provider: resolvedProvider.provider,
+      reservationId: resolvedProvider.reservationId,
     });
 
     return response.status(201).json(await findRun(run.id));
   } catch (error) {
+    if (reservationId) await settlePlatformCredit(reservationId, false).catch(() => undefined);
     return next(error);
   }
 });
@@ -157,7 +167,7 @@ evaluationsRouter.post("/evaluations/:id/restart", authRequired, async (request,
     if (!dataset) return response.status(404).json({ error: "Dataset not found" });
     if (!dataset.isSample && dataset.userId !== request.user!.id) return response.status(404).json({ error: "Dataset not found" });
 
-    const provider = await getUserProvider(request.user!.id);
+    const resolvedProvider = await resolveUserProvider(request.user!.id, "restart");
 
     const newRun = await prisma.evaluationRun.create({
       data: {
@@ -175,6 +185,7 @@ evaluationsRouter.post("/evaluations/:id/restart", authRequired, async (request,
         status: "running",
       },
     });
+    if (resolvedProvider.reservationId) await attachReservationToRun(resolvedProvider.reservationId, newRun.id);
 
     const testCases = dataset.testCases.map((testCase) => ({
       id: testCase.id,
@@ -199,7 +210,8 @@ evaluationsRouter.post("/evaluations/:id/restart", authRequired, async (request,
       evaluatorModel: (existing.evaluatorModel as unknown as ModelId) ?? undefined,
       evaluatorThreshold: existing.evaluatorThreshold ?? null,
       evaluatorPrompt: existing.evaluatorPrompt ?? null,
-      provider,
+      provider: resolvedProvider.provider,
+      reservationId: resolvedProvider.reservationId,
     });
 
     return response.status(201).json(await findRun(newRun.id));
@@ -234,6 +246,7 @@ export type ExecuteRunOptions = {
   evaluatorPrompt?: string | null;
   /** Optional provider override (used by deterministic tests). */
   provider?: import("../provider.js").ModelProvider;
+  reservationId?: string;
 };
 
 export async function executeRun({
@@ -250,6 +263,7 @@ export async function executeRun({
   evaluatorThreshold = null,
   evaluatorPrompt = null,
   provider,
+  reservationId,
 }: ExecuteRunOptions) {
   // ensure cancellation flag exists for this run
   runCancellation.set(runId, false);
@@ -392,6 +406,10 @@ export async function executeRun({
     anyFailed = true;
     console.error(`Evaluation run ${runId} crashed:`, error);
   } finally {
+    if (reservationId) {
+      const completedWork = await prisma.evaluationResult.count({ where: { runId, status: "completed" } }) > 0;
+      await settlePlatformCredit(reservationId, completedWork).catch((error) => console.error("Could not settle evaluation credit:", error));
+    }
     await prisma.evaluationRun.update({
       where: { id: runId },
       data: { status: anyFailed ? "partial_failure" : "completed", completedAt: new Date() },

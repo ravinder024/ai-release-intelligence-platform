@@ -1,5 +1,5 @@
 import OpenAI, { APIConnectionError, APIError, AuthenticationError, InternalServerError, NotFoundError, PermissionDeniedError, RateLimitError } from "openai";
-import { supportedModels, type ModelId } from "@prompt-playground/shared";
+import { isSupportedFreeModel, supportedModels, type ModelId } from "@prompt-playground/shared";
 
 export type ProviderResult = {
   output: string;
@@ -65,6 +65,10 @@ class OpenRouterProvider implements ModelProvider {
   }
 
   async execute({ model, prompt, input }: { model: ModelId; prompt: string; input: string }) {
+    if (!isSupportedFreeModel(model)) {
+      throw new Error("Only supported OpenRouter free models are allowed.");
+    }
+
     let lastError: unknown;
     let retryCount = 0;
 

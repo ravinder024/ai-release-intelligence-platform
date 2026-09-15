@@ -1,9 +1,10 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useAuth } from "../auth";
 import { api } from "../api";
 
 export function SettingsPage() {
   const { user, setKey, removeKey, logout } = useAuth();
+  const [usage, setUsage] = useState<{ total: number; used: number; pending: number; remaining: number; byokConfigured: boolean; platformCreditsAvailable: boolean } | null>(null);
   const [key, setKeyInput] = useState("");
   const [keyError, setKeyError] = useState<string | null>(null);
   const [keyBusy, setKeyBusy] = useState(false);
@@ -14,6 +15,10 @@ export function SettingsPage() {
   const [pwError, setPwError] = useState<string | null>(null);
   const [pwBusy, setPwBusy] = useState(false);
   const [pwSaved, setPwSaved] = useState(false);
+
+  useEffect(() => {
+    api.get<typeof usage>("/api/usage").then(setUsage).catch(() => setUsage(null));
+  }, [user?.hasKey]);
 
   async function saveKey(event: React.FormEvent) {
     event.preventDefault();
@@ -73,11 +78,18 @@ export function SettingsPage() {
 
       <div className="settings-grid">
         <div className="panel settings-card">
+          <h2>Usage</h2>
+          <p className="muted">Platform-funded evaluations are complete dataset or experiment runs, not individual scenarios.</p>
+          <div className="usage-number"><strong>{usage?.remaining ?? "—"}</strong><span>free evaluations remaining</span></div>
+          <p className="hint">{usage ? `${usage.used} of ${usage.total} used${usage.pending ? ` · ${usage.pending} pending` : ""}.` : "Usage will appear after your account loads."}</p>
+          <p className="success">Platform credits are available without configuring an API key.</p>
+        </div>
+        <div className="panel settings-card">
           <h2>Your OpenRouter key</h2>
           <p className="muted">
             {user?.hasKey
               ? "A key is saved for your account. It is used only when you run comparisons or evaluations."
-              : "No key saved yet. Add one to run model calls — each user brings their own key."}
+                : "BYOK is optional. Add your own key after platform-funded evaluations are exhausted."}
           </p>
           <form onSubmit={saveKey} className="auth-form">
             <label>OpenRouter API key

@@ -10,6 +10,8 @@ export type AuthUser = {
   email: string;
   displayName: string;
   hasKey: boolean;
+  role: "user" | "admin";
+  provider: "local" | "google";
 };
 
 export function hashToken(token: string): string {
@@ -25,12 +27,14 @@ export function generateResetCode(): string {
   return randomBytes(4).toString("hex").toUpperCase();
 }
 
-function toAuthUser(user: { id: string; email: string; displayName: string; openRouterKeyEncrypted: string | null }): AuthUser {
+function toAuthUser(user: { id: string; email: string; displayName: string; openRouterKeyEncrypted: string | null; role: "user" | "admin"; identities?: Array<{ provider: string }> }): AuthUser {
   return {
     id: user.id,
     email: user.email,
     displayName: user.displayName,
     hasKey: Boolean(user.openRouterKeyEncrypted),
+    role: user.role,
+    provider: user.identities?.some((identity) => identity.provider === "google") ? "google" : "local",
   };
 }
 
@@ -64,6 +68,26 @@ export function clearSessionCookie(response: Response): void {
   response.clearCookie(SESSION_COOKIE, { path: "/" });
 }
 
+export const OIDC_STATE_COOKIE = "arip_oidc_state";
+export const OIDC_NONCE_COOKIE = "arip_oidc_nonce";
+export const OIDC_VERIFIER_COOKIE = "arip_oidc_verifier";
+
+export function setTransientCookie(response: Response, name: string, value: string): void {
+  response.cookie(name, value, {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: process.env.NODE_ENV === "production",
+    maxAge: 10 * 60 * 1000,
+    path: "/api/auth",
+  });
+}
+
+export function clearTransientCookies(response: Response): void {
+  for (const name of [OIDC_STATE_COOKIE, OIDC_NONCE_COOKIE, OIDC_VERIFIER_COOKIE]) {
+    response.clearCookie(name, { path: "/api/auth" });
+  }
+}
+
 /**
  * Looks up the user for the request's session cookie (if any). Returns null when signed out.
  */
@@ -72,7 +96,7 @@ async function getUserFromRequest(request: Request): Promise<AuthUser | null> {
   if (!token) return null;
   const session = await prisma.session.findUnique({
     where: { tokenHash: hashToken(token) },
-    include: { user: true },
+    include: { user: { include: { identities: { select: { provider: true } } } } },
   });
   if (!session) return null;
   if (session.expiresAt.getTime() < Date.now()) {
@@ -114,6 +138,17 @@ export async function authRequired(request: Request, response: Response, next: N
   } catch (error) {
     next(error);
   }
+}
+
+/** Requires an authenticated administrator for operational endpoints. */
+export async function adminRequired(request: Request, response: Response, next: NextFunction): Promise<void> {
+  await authRequired(request, response, () => {
+    if (request.user?.role !== "admin") {
+      response.status(403).json({ error: "Administrator access required." });
+      return;
+    }
+    next();
+  });
 }
 
 /** Reads a single cookie value from the raw Cookie header (no cookie-parser dependency). */

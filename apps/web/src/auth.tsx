@@ -6,6 +6,8 @@ export type AuthUser = {
   email: string;
   displayName: string;
   hasKey: boolean;
+  role: "user" | "admin";
+  provider: "local" | "google";
 };
 
 type AuthContextValue = {

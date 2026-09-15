@@ -32,23 +32,57 @@ enum ExperimentDecision {
   continue_experiment
 }
 
+enum UserRole {
+  user
+  admin
+}
+
+enum CreditReservationStatus {
+  reserved
+  consumed
+  released
+}
+
 model User {
   id                     String   @id @default(uuid()) @db.Uuid
   email                  String   @unique @db.VarChar(255)
-  passwordHash           String   @map("password_hash") @db.Text
+  passwordHash           String?  @map("password_hash") @db.Text
   displayName            String   @map("display_name") @db.VarChar(120)
   openRouterKeyEncrypted String?  @map("open_router_key_encrypted") @db.Text
+  role                   UserRole @default(user)
+  emailVerified          Boolean  @default(false) @map("email_verified")
+  lastLoginAt            DateTime? @map("last_login_at") @db.Timestamptz(6)
   createdAt              DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt              DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
+  identities          AuthIdentity[]
   sessions            Session[]
   passwordResetTokens PasswordResetToken[]
   promptComparisons   PromptComparison[]
   datasets            Dataset[]
   evaluationRuns      EvaluationRun[]
   experiments         Experiment[]
+  creditReservations  EvaluationCreditReservation[]
 
   @@map("users")
+}
+
+model AuthIdentity {
+  id                String   @id @default(uuid()) @db.Uuid
+  userId            String   @map("user_id") @db.Uuid
+  provider          String   @db.VarChar(64)
+  issuer            String   @db.VarChar(255)
+  subject           String   @db.VarChar(255)
+  email             String?  @db.VarChar(255)
+  displayName       String?  @map("display_name") @db.VarChar(120)
+  emailVerified     Boolean  @default(false) @map("email_verified")
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  lastLoginAt       DateTime? @map("last_login_at") @db.Timestamptz(6)
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([issuer, subject])
+  @@index([userId])
+  @@map("auth_identities")
 }
 
 model Session {
@@ -75,6 +109,22 @@ model PasswordResetToken {
 
   @@index([userId])
   @@map("password_reset_tokens")
+}
+
+model EvaluationCreditReservation {
+  id          String                   @id @default(uuid()) @db.Uuid
+  userId      String                   @map("user_id") @db.Uuid
+  runId       String?                  @unique @map("run_id") @db.Uuid
+  status      CreditReservationStatus  @default(reserved)
+  amount      Int                      @default(1)
+  reason      String                   @db.VarChar(120)
+  createdAt   DateTime                 @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime                 @updatedAt @map("updated_at") @db.Timestamptz(6)
+  user        User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  run         EvaluationRun?           @relation(fields: [runId], references: [id], onDelete: SetNull)
+
+  @@index([userId, status])
+  @@map("evaluation_credit_reservations")
 }
 
 model PromptComparison {
@@ -168,6 +218,7 @@ model EvaluationRun {
   experiment         Experiment?       @relation(fields: [experimentId], references: [id], onDelete: Cascade)
   userId             String?           @map("user_id") @db.Uuid
   user               User?             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  creditReservation EvaluationCreditReservation?
   dataset            Dataset           @relation(fields: [datasetId], references: [id], onDelete: Cascade)
   results            EvaluationResult[]
 

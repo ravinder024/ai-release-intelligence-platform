@@ -6,6 +6,16 @@ import { createProvider } from "../provider.js";
 import { encryptKey } from "../crypto.js";
 import { authRequired, clearSessionCookie, createSession, generateResetCode, hashToken, readCookie, setSessionCookie, SESSION_COOKIE } from "../auth.js";
 import { supportedModels } from "@prompt-playground/shared";
+import { getUsageSummary } from "../services/usage.js";
+import { rateLimit } from "../rateLimit.js";
+import { createGoogleAuthorizationRequest, exchangeGoogleAuthorizationCode } from "../googleOidc.js";
+import {
+  OIDC_NONCE_COOKIE,
+  OIDC_STATE_COOKIE,
+  OIDC_VERIFIER_COOKIE,
+  clearTransientCookies,
+  setTransientCookie,
+} from "../auth.js";
 
 const BCRYPT_ROUNDS = 10;
 const RESET_CODE_TTL_MS = 30 * 60 * 1000; // 30 minutes
@@ -41,6 +51,89 @@ const validateKeySchema = z.object({
 });
 
 export const authRouter = Router();
+authRouter.use(rateLimit({ name: "auth", windowMs: 60_000, max: 60 }));
+
+authRouter.get("/usage", authRequired, async (request, response, next) => {
+  try {
+    response.json(await getUsageSummary(request.user!.id));
+  } catch (error) {
+    next(error);
+  }
+});
+
+// GET /api/auth/google — start Google OpenID Connect with state, nonce, and PKCE.
+authRouter.get("/auth/google", async (_request, response, next) => {
+  try {
+    const authorization = await createGoogleAuthorizationRequest();
+    setTransientCookie(response, OIDC_STATE_COOKIE, authorization.state);
+    setTransientCookie(response, OIDC_NONCE_COOKIE, authorization.nonce);
+    setTransientCookie(response, OIDC_VERIFIER_COOKIE, authorization.codeVerifier);
+    response.redirect(authorization.url.href);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// GET /api/auth/google/callback — verify the Google identity, then create a local session.
+authRouter.get("/auth/google/callback", async (request, response, next) => {
+  try {
+    const state = readCookie(request, OIDC_STATE_COOKIE);
+    const nonce = readCookie(request, OIDC_NONCE_COOKIE);
+    const codeVerifier = readCookie(request, OIDC_VERIFIER_COOKIE);
+    if (!state || !nonce || !codeVerifier) return response.status(400).send("Google sign-in expired. Please try again.");
+
+    const identity = await exchangeGoogleAuthorizationCode({
+      currentUrl: new URL(request.originalUrl, process.env.GOOGLE_CALLBACK_URL || "http://localhost:5101"),
+      state,
+      nonce,
+      codeVerifier,
+    });
+    const existingIdentity = await prisma.authIdentity.findUnique({
+      where: { issuer_subject: { issuer: identity.issuer, subject: identity.subject } },
+    });
+
+    let userId: string;
+    if (existingIdentity) {
+      userId = existingIdentity.userId;
+      await prisma.$transaction([
+        prisma.authIdentity.update({ where: { id: existingIdentity.id }, data: { email: identity.email, displayName: identity.displayName, emailVerified: true, lastLoginAt: new Date() } }),
+        prisma.user.update({ where: { id: userId }, data: { emailVerified: true, lastLoginAt: new Date(), displayName: identity.displayName } }),
+      ]);
+    } else {
+      const emailConflict = await prisma.user.findUnique({ where: { email: identity.email }, select: { id: true } });
+      if (emailConflict) return response.status(409).send("This email already has a local account. Sign in locally before linking Google.");
+      const user = await prisma.user.create({
+        data: {
+          email: identity.email,
+          passwordHash: null,
+          displayName: identity.displayName,
+          emailVerified: true,
+          lastLoginAt: new Date(),
+          identities: {
+            create: {
+              provider: "google",
+              issuer: identity.issuer,
+              subject: identity.subject,
+              email: identity.email,
+              displayName: identity.displayName,
+              emailVerified: true,
+              lastLoginAt: new Date(),
+            },
+          },
+        },
+      });
+      userId = user.id;
+    }
+
+    const token = await createSession(userId);
+    clearTransientCookies(response);
+    setSessionCookie(response, token);
+    response.redirect("/");
+  } catch (error) {
+    clearTransientCookies(response);
+    next(error);
+  }
+});
 
 /** One tiny model call to confirm the key is valid (best-effort; free models may be rate-limited). */
 async function testOpenRouterKey(apiKey: string): Promise<{ ok: boolean; error?: string }> {
@@ -58,6 +151,9 @@ async function testOpenRouterKey(apiKey: string): Promise<{ ok: boolean; error?:
 // POST /api/auth/signup — create an account and start a session
 authRouter.post("/auth/signup", async (request, response, next) => {
   try {
+    if (process.env.NODE_ENV === "production" && process.env.ALLOW_LOCAL_SIGNUP !== "true") {
+      return response.status(403).json({ error: "Public password signup is disabled. Continue with Google." });
+    }
     const payload = signupSchema.parse(request.body);
     const existing = await prisma.user.findUnique({ where: { email: payload.email } });
     if (existing) return response.status(409).json({ error: "An account with this email already exists" });
@@ -68,12 +164,15 @@ authRouter.post("/auth/signup", async (request, response, next) => {
     });
 
     const token = await createSession(user.id);
+    await prisma.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } });
     setSessionCookie(response, token);
     return response.status(201).json({
       id: user.id,
       email: user.email,
       displayName: user.displayName,
       hasKey: false,
+      role: user.role,
+      provider: "local",
     });
   } catch (error) {
     next(error);
@@ -85,16 +184,22 @@ authRouter.post("/auth/login", async (request, response, next) => {
   try {
     const payload = loginSchema.parse(request.body);
     const user = await prisma.user.findUnique({ where: { email: payload.email } });
-    const ok = user ? await bcrypt.compare(payload.password, user.passwordHash) : false;
+    const ok = user?.passwordHash ? await bcrypt.compare(payload.password, user.passwordHash) : false;
     if (!user || !ok) return response.status(401).json({ error: "Invalid email or password" });
+    if (process.env.NODE_ENV === "production" && user.role !== "admin" && process.env.ALLOW_LOCAL_LOGIN !== "true") {
+      return response.status(403).json({ error: "Local login is reserved for the emergency Admin account. Continue with Google." });
+    }
 
     const token = await createSession(user.id);
+    await prisma.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } });
     setSessionCookie(response, token);
     return response.json({
       id: user.id,
       email: user.email,
       displayName: user.displayName,
       hasKey: Boolean(user.openRouterKeyEncrypted),
+      role: user.role,
+      provider: "local",
     });
   } catch (error) {
     next(error);
@@ -109,7 +214,7 @@ authRouter.post("/auth/change-password", authRequired, async (request, response,
       .parse(request.body);
     const user = await prisma.user.findUnique({ where: { id: request.user!.id } });
     if (!user) return response.status(401).json({ error: "Not signed in" });
-    const ok = await bcrypt.compare(payload.oldPassword, user.passwordHash);
+    const ok = user.passwordHash ? await bcrypt.compare(payload.oldPassword, user.passwordHash) : false;
     if (!ok) return response.status(400).json({ error: "Current password is incorrect" });
     const passwordHash = await bcrypt.hash(payload.newPassword, BCRYPT_ROUNDS);
     await prisma.user.update({ where: { id: user.id }, data: { passwordHash } });
@@ -145,7 +250,7 @@ authRouter.get("/auth/me", async (request, response, next) => {
     if (!token) return response.status(401).json({ error: "Not signed in" });
     const session = await prisma.session.findUnique({
       where: { tokenHash: hashToken(token) },
-      include: { user: true },
+      include: { user: { include: { identities: { select: { provider: true } } } } },
     });
     if (!session || session.expiresAt.getTime() < Date.now()) {
       return response.status(401).json({ error: "Not signed in" });
@@ -155,6 +260,8 @@ authRouter.get("/auth/me", async (request, response, next) => {
       email: session.user.email,
       displayName: session.user.displayName,
       hasKey: Boolean(session.user.openRouterKeyEncrypted),
+      role: session.user.role,
+      provider: session.user.identities.some((identity) => identity.provider === "google") ? "google" : "local",
     });
   } catch (error) {
     next(error);
