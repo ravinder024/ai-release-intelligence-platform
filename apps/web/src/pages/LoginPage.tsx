@@ -35,8 +35,8 @@ export function LoginPage() {
         </button>
         <div className="auth-divider"><span>or emergency admin login</span></div>
         <form onSubmit={submit} className="auth-form">
-          <label>Email
-            <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required autoComplete="email" />
+          <label>Email or username
+            <input type="text" value={email} onChange={(e) => setEmail(e.target.value)} required autoComplete="username" />
           </label>
           <label>Password
             <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required autoComplete="current-password" />

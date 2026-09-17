@@ -40,8 +40,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => { void refresh(); }, []);
 
-  async function login(email: string, password: string) {
-    const me = await api.post<AuthUser>("/api/auth/login", { email, password });
+  async function login(identifier: string, password: string) {
+    const trimmed = identifier.trim();
+    const payload = trimmed.includes("@") ? { email: trimmed, password } : { username: trimmed, password };
+    const me = await api.post<AuthUser>("/api/auth/login", payload);
     setUser(me);
   }
 

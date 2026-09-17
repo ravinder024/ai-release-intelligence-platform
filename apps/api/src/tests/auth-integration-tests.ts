@@ -90,6 +90,18 @@ async function main() {
     const loginNew = await request(base, sessionA, "/api/auth/login", "POST", { email: emailA, password: "newpassword456" });
     check("login with new password", loginNew.status, 200);
 
+    // -- username login (used by the emergency Admin account)
+    const usernameA = `AdminStyle${Date.now()}`;
+    await prisma.user.update({ where: { id: (me.data as { id: string }).id }, data: { username: usernameA } });
+    const byUsername = await request(base, { cookie: "" }, "/api/auth/login", "POST", { username: usernameA, password: "newpassword456" });
+    check("login with username", byUsername.status, 200);
+    const byUsernameWrong = await request(base, { cookie: "" }, "/api/auth/login", "POST", { username: usernameA, password: "definitely-wrong" });
+    check("login with username wrong password 401", byUsernameWrong.status, 401);
+    const unknownUser = await request(base, { cookie: "" }, "/api/auth/login", "POST", { username: "__nobody__", password: "irrelevant123" });
+    check("login with unknown username 401", unknownUser.status, 401);
+    const missingIdentifier = await request(base, { cookie: "" }, "/api/auth/login", "POST", { password: "irrelevant123" });
+    check("login without identifier rejected", missingIdentifier.status, 400);
+
     // -- change password (wrong current -> 400)
     const changeBad = await request(base, sessionA, "/api/auth/change-password", "POST", { oldPassword: "notright", newPassword: "another456" });
     check("change-password wrong current 400", changeBad.status, 400);

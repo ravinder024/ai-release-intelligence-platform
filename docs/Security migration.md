@@ -35,7 +35,9 @@ Required in production:
 - `DATABASE_URL`
 - `ENCRYPTION_KEY`
 - `SESSION_COOKIE_SECRET`
-- `ADMIN_INITIAL_PASSWORD`
+- `ADMIN_USERNAME`
+- `ADMIN_PASSWORD`
+- `ADMIN_EMAIL` (optional, defaults to `ravinderk.jobs@gmail.com`)
 - `GOOGLE_CLIENT_ID`
 - `GOOGLE_CLIENT_SECRET`
 - `GOOGLE_CALLBACK_URL`
@@ -43,7 +45,7 @@ Required in production:
 - `OPENROUTER_API_KEY` (server-side platform key only)
 - `NODE_ENV=production`
 
-`ADMIN_INITIAL_PASSWORD` is read only at startup, hashed, and never returned or logged. The Admin identity is `Admin <ravinderk.jobs@gmail.com>`.
+`ADMIN_USERNAME` and `ADMIN_PASSWORD` are read only at startup, hashed with bcrypt, and never returned or logged. The Admin signs in with either the username or the email address, and can reach admin-only endpoints.
 
 ## Authentication model
 

@@ -29,10 +29,13 @@ const signupSchema = z.object({
   displayName: z.string().trim().min(1, "Name is required").max(120),
 });
 
-const loginSchema = z.object({
-  email: emailSchema,
-  password: z.string().min(1, "Password is required"),
-});
+const loginSchema = z
+  .object({
+    email: z.string().trim().toLowerCase().max(255).optional(),
+    username: z.string().trim().max(120).optional(),
+    password: z.string().min(1, "Password is required"),
+  })
+  .refine((value) => Boolean(value.email || value.username), { message: "Email or username is required" });
 
 const forgotPasswordSchema = z.object({ email: emailSchema });
 
@@ -183,9 +186,17 @@ authRouter.post("/auth/signup", async (request, response, next) => {
 authRouter.post("/auth/login", async (request, response, next) => {
   try {
     const payload = loginSchema.parse(request.body);
-    const user = await prisma.user.findUnique({ where: { email: payload.email } });
+    const identifier = (payload.email ?? payload.username ?? "").trim();
+    const user = await prisma.user.findFirst({
+      where: {
+        OR: [
+          { email: identifier.toLowerCase() },
+          { username: { equals: identifier, mode: "insensitive" } },
+        ],
+      },
+    });
     const ok = user?.passwordHash ? await bcrypt.compare(payload.password, user.passwordHash) : false;
-    if (!user || !ok) return response.status(401).json({ error: "Invalid email or password" });
+    if (!user || !ok) return response.status(401).json({ error: "Invalid credentials" });
     if (process.env.NODE_ENV === "production" && user.role !== "admin" && process.env.ALLOW_LOCAL_LOGIN !== "true") {
       return response.status(403).json({ error: "Local login is reserved for the emergency Admin account. Continue with Google." });
     }
