@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { supportedModels, type Comparison, type CreateComparisonRequest, type ModelId, type PromptExecution } from "@prompt-playground/shared";
 import { api } from "../api";
+import { modelOptionLabel, useModels } from "../useModels";
 
 const initialRequest: CreateComparisonRequest = {
   model: "nvidia/nemotron-3.5-lightning:free",
@@ -10,6 +11,7 @@ const initialRequest: CreateComparisonRequest = {
 };
 
 export function PlaygroundPage() {
+  const { models, defaultModel, checkedAt } = useModels();
   const [form, setForm] = useState(initialRequest);
   const [comparison, setComparison] = useState<Comparison | null>(null);
   const [history, setHistory] = useState<Comparison[]>([]);
@@ -19,6 +21,12 @@ export function PlaygroundPage() {
   const [volumePeriod, setVolumePeriod] = useState<"day" | "week" | "month">("month");
 
   useEffect(() => { void loadHistory(); }, []);
+
+  useEffect(() => {
+    if (models.some((item) => item.id === form.model && item.health === "unavailable")) {
+      setForm((current) => ({ ...current, model: defaultModel }));
+    }
+  }, [models, defaultModel, form.model]);
 
   async function loadHistory() {
     try {
@@ -59,8 +67,9 @@ export function PlaygroundPage() {
         <section className="controls panel">
           <label>Model
             <select value={form.model} onChange={(event) => updateField("model", event.target.value as ModelId)}>
-              {supportedModels.map((model) => <option key={model.id} value={model.id}>{model.label}</option>)}
+              {models.map((model) => <option key={model.id} value={model.id} disabled={model.health === "unavailable"}>{modelOptionLabel(model)}</option>)}
             </select>
+            <span className="hint">{checkedAt ? `Free-model health last checked ${new Date(checkedAt).toLocaleString()}.` : "Free-model health has not been checked yet."}</span>
           </label>
           <label>Shared input
             <textarea value={form.input} onChange={(event) => updateField("input", event.target.value)} rows={5} />

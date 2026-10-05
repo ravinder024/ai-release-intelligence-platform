@@ -2,15 +2,60 @@ import { Router } from "express";
 import { supportedModels } from "@prompt-playground/shared";
 import { adminRequired } from "../auth.js";
 import { rateLimit } from "../rateLimit.js";
+import { readFile } from "node:fs/promises";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 export const modelsRouter = Router();
 
-modelsRouter.get("/models", (_request, response) => response.json({ models: supportedModels }));
+const healthReportPath = resolve(dirname(fileURLToPath(import.meta.url)), "../../model-health.json");
+const HEALTH_MAX_AGE_MS = 36 * 60 * 60 * 1000;
+
+type HealthEntry = { status: "healthy" | "rate_limited" | "unavailable" | "check_failed"; error?: string; latencyMs?: number };
+
+async function buildModelCatalog() {
+	try {
+		const report = JSON.parse(await readFile(healthReportPath, "utf8")) as {
+			checkedAt?: string;
+			models?: Array<{ model: string; status?: HealthEntry["status"]; ok?: boolean; error?: string; latencyMs?: number }>;
+		};
+		const checkedAt = report.checkedAt ? Date.parse(report.checkedAt) : NaN;
+		const fresh = Number.isFinite(checkedAt) && Date.now() - checkedAt <= HEALTH_MAX_AGE_MS;
+		const health = new Map((report.models ?? []).map((item) => [item.model, item]));
+		return {
+			checkedAt: report.checkedAt ?? null,
+			stale: !fresh,
+			models: supportedModels.map((model) => {
+				const entry = fresh ? health.get(model.id) : undefined;
+				const status = entry?.status ?? (entry?.ok ? "healthy" : "unverified");
+				return { ...model, health: status, latencyMs: entry?.latencyMs ?? null, healthMessage: entry?.error ?? null };
+			}),
+		};
+	} catch {
+		return {
+			checkedAt: null,
+			stale: true,
+			models: supportedModels.map((model) => ({ ...model, health: "unverified", latencyMs: null, healthMessage: null })),
+		};
+	}
+}
+
+modelsRouter.get("/models", async (_request, response, next) => {
+	try {
+		response.json(await buildModelCatalog());
+	} catch (error) {
+		next(error);
+	}
+});
 
 // Return a curated list of free text models (top-weekly).
 // Source: https://openrouter.ai/models?max_price=0&output_modalities=text&order=top-weekly
-modelsRouter.get("/models/free", (_request, response) => {
-	return response.json({ source: "https://openrouter.ai/models?max_price=0&output_modalities=text&order=top-weekly", models: supportedModels });
+modelsRouter.get("/models/free", async (_request, response, next) => {
+	try {
+		return response.json({ source: "https://openrouter.ai/models?max_price=0&output_modalities=text&order=top-weekly", ...(await buildModelCatalog()) });
+	} catch (error) {
+		next(error);
+	}
 });
 
 // Simple in-memory cache of the last QA run (timestamp + results)

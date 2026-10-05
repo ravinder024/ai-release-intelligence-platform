@@ -13,6 +13,8 @@
     "db:prune": "npm run build && node dist/scripts/prune.js",
     "db:invalidate-sessions": "npm run build && node dist/scripts/invalidateSessions.js",
     "db:backfill-ownership": "npm run build && node dist/scripts/backfillRunOwnership.js",
+    "model-health:check": "npm run build && node dist/scripts/qaModels.js",
+    "model-health:register-task": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/registerModelHealthTask.ps1",
     "test": "npm run build && node dist/tests/run-evaluator-tests.js && node dist/tests/metrics-tests.js && node dist/tests/security-tests.js",
     "test:integration": "npm run build && node dist/tests/auth-integration-tests.js && node dist/tests/experiments-integration-tests.js"
   },

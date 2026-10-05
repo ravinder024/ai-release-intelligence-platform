@@ -79,6 +79,7 @@ Requirements: Node.js 18+, PostgreSQL running locally.
 - [Roadmap](docs/Roadmap.md) — phased product plan
 - [Architecture](docs/Architecture.md) — technical design
 - [Security migration](docs/Security%20migration.md) — credential revocation, Google setup, Admin bootstrap, quota, and free-model safeguards
+- [Model health schedule](docs/Model%20health.md) — daily OpenRouter free-model checks (Windows Task Scheduler / VPS cron)
 - [Implementation notes](docs/implementation/) — per-feature implementation details
 
 ## Deploying

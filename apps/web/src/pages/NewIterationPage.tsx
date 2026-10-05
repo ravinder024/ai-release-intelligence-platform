@@ -2,10 +2,12 @@ import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { supportedModels, type ExperimentDetail, type ModelId } from "@prompt-playground/shared";
 import { createIteration, getExperiment } from "../api";
+import { modelOptionLabel, useModels } from "../useModels";
 
 const defaultEvaluatorPrompt = "You are an automated judge that evaluates assistant responses against the test case input and expected output. Return only a JSON object with overallScore, pass, summary, and criteriaResults.";
 
 export function NewIterationPage() {
+  const { models, defaultModel } = useModels();
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const [current, setCurrent] = useState<ExperimentDetail | null>(null);
@@ -33,6 +35,11 @@ export function NewIterationPage() {
       })
       .catch((caught) => setError(caught instanceof Error ? caught.message : "Could not load experiment"));
   }, [id]);
+
+  useEffect(() => {
+    if (models.some((item) => item.id === candidateModel && item.health === "unavailable")) setCandidateModel(defaultModel);
+    if (models.some((item) => item.id === evaluatorModel && item.health === "unavailable")) setEvaluatorModel(defaultModel);
+  }, [models, defaultModel, candidateModel, evaluatorModel]);
 
   if (error && !current) return <section className="intro"><p className="error">{error}</p><p><Link to="/experiments">Back to experiments</Link></p></section>;
   if (!current) return <section className="intro"><p>Loading…</p></section>;
@@ -102,7 +109,7 @@ export function NewIterationPage() {
           </label>
           <label>Model
             <select value={candidateModel} onChange={(event) => setCandidateModel(event.target.value as ModelId)}>
-              {supportedModels.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
+              {models.map((item) => <option key={item.id} value={item.id} disabled={item.health === "unavailable"}>{modelOptionLabel(item)}</option>)}
             </select>
           </label>
         </section>
@@ -117,7 +124,7 @@ export function NewIterationPage() {
             <div className="judge-settings-inner">
               <label>Judge model
                 <select value={evaluatorModel} onChange={(event) => setEvaluatorModel(event.target.value as ModelId)}>
-                  {supportedModels.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
+                  {models.map((item) => <option key={item.id} value={item.id} disabled={item.health === "unavailable"}>{modelOptionLabel(item)}</option>)}
                 </select>
               </label>
               <label>Pass threshold

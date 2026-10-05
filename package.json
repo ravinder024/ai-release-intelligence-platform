@@ -11,7 +11,9 @@
     "db:seed": "npm run db:seed -w @prompt-playground/api",
     "db:prune": "npm run db:prune -w @prompt-playground/api",
     "db:invalidate-sessions": "npm run db:invalidate-sessions -w @prompt-playground/api",
-    "db:backfill-ownership": "npm run db:backfill-ownership -w @prompt-playground/api"
+    "db:backfill-ownership": "npm run db:backfill-ownership -w @prompt-playground/api",
+    "model-health:check": "npm run model-health:check -w @prompt-playground/api",
+    "model-health:register-task": "npm run model-health:register-task -w @prompt-playground/api"
   },
   "devDependencies": {
     "concurrently": "^9.1.2"

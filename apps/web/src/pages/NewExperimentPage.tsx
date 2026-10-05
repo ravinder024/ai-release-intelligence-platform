@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { supportedModels, type Dataset, type ModelId } from "@prompt-playground/shared";
 import { api, createExperiment, runExperiment } from "../api";
+import { modelOptionLabel, useModels } from "../useModels";
 
 const defaultBaseline = "You are a support assistant. Answer the customer's question clearly and helpfully.";
 const defaultCandidate = "You are a support assistant. Acknowledge the concern first, answer clearly, and never make claims you cannot support.";
@@ -10,6 +11,7 @@ const defaultEvaluatorPrompt = "You are an automated judge that evaluates assist
 const steps = ["Define", "Configure", "Review"];
 
 export function NewExperimentPage() {
+  const { models, defaultModel, checkedAt } = useModels();
   const navigate = useNavigate();
   const [step, setStep] = useState(0);
   const [datasets, setDatasets] = useState<Dataset[]>([]);
@@ -32,6 +34,12 @@ export function NewExperimentPage() {
       .then((list) => { setDatasets(list); setDatasetId((current) => current || list[0]?.id || ""); })
       .catch(() => setError("Could not load datasets"));
   }, []);
+
+  useEffect(() => {
+    if (models.some((item) => item.id === baselineModel && item.health === "unavailable")) setBaselineModel(defaultModel);
+    if (models.some((item) => item.id === candidateModel && item.health === "unavailable")) setCandidateModel(defaultModel);
+    if (models.some((item) => item.id === evaluatorModel && item.health === "unavailable")) setEvaluatorModel(defaultModel);
+  }, [models, defaultModel, baselineModel, candidateModel, evaluatorModel]);
 
   const selectedDataset = datasets.find((dataset) => dataset.id === datasetId) ?? null;
   const stepValid = (index: number): boolean => {
@@ -126,7 +134,7 @@ export function NewExperimentPage() {
             </label>
             <label>Model
               <select value={baselineModel} onChange={(event) => setBaselineModel(event.target.value as ModelId)}>
-                {supportedModels.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
+                {models.map((item) => <option key={item.id} value={item.id} disabled={item.health === "unavailable"}>{modelOptionLabel(item)}</option>)}
               </select>
             </label>
           </section>
@@ -141,7 +149,7 @@ export function NewExperimentPage() {
             </label>
             <label>Model
               <select value={candidateModel} onChange={(event) => setCandidateModel(event.target.value as ModelId)}>
-                {supportedModels.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
+                {models.map((item) => <option key={item.id} value={item.id} disabled={item.health === "unavailable"}>{modelOptionLabel(item)}</option>)}
               </select>
             </label>
           </section>
@@ -163,7 +171,7 @@ export function NewExperimentPage() {
               <div className="judge-settings-inner">
                 <label>Judge model
                   <select value={evaluatorModel} onChange={(event) => setEvaluatorModel(event.target.value as ModelId)}>
-                    {supportedModels.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
+                    {models.map((item) => <option key={item.id} value={item.id} disabled={item.health === "unavailable"}>{modelOptionLabel(item)}</option>)}
                   </select>
                 </label>
                 <label>Pass threshold

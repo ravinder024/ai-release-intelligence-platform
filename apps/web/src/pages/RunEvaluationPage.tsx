@@ -1,21 +1,23 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { supportedModels, type DatasetDetail, type EvaluationRun, type ModelId } from "@prompt-playground/shared";
+import { type DatasetDetail, type EvaluationRun, type ModelId } from "@prompt-playground/shared";
 import { api } from "../api";
+import { modelOptionLabel, useModels } from "../useModels";
 
 const defaultPromptA = "You are a concise support assistant. Explain the likely next step in no more than 100 words.";
 const defaultPromptB = "You are an empathetic support assistant. Acknowledge the concern, explain the likely next step, and offer a clear path to resolution.";
 const defaultEvaluatorPrompt = "You are an automated judge that evaluates assistant responses against the test case input and expected output. Return only a JSON object with overallScore, pass, summary, and criteriaResults.";
 
 export function RunEvaluationPage() {
+  const { models, defaultModel, checkedAt } = useModels();
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const [dataset, setDataset] = useState<DatasetDetail | null>(null);
-  const [model, setModel] = useState<ModelId>(supportedModels[0].id);
+  const [model, setModel] = useState<ModelId>(defaultModel);
   const [promptA, setPromptA] = useState(defaultPromptA);
   const [promptB, setPromptB] = useState(defaultPromptB);
   const [useEvaluator, setUseEvaluator] = useState(false);
-  const [evaluatorModel, setEvaluatorModel] = useState<ModelId>(supportedModels[0].id);
+  const [evaluatorModel, setEvaluatorModel] = useState<ModelId>(defaultModel);
   const [evaluatorThreshold, setEvaluatorThreshold] = useState(70);
   const [evaluatorPrompt, setEvaluatorPrompt] = useState(defaultEvaluatorPrompt);
   const [isStarting, setIsStarting] = useState(false);
@@ -26,6 +28,11 @@ export function RunEvaluationPage() {
       .then(setDataset)
       .catch((caught) => setError(caught instanceof Error ? caught.message : "Could not load dataset"));
   }, [id]);
+
+  useEffect(() => {
+    if (models.some((item) => item.id === model && item.health === "unavailable")) setModel(defaultModel);
+    if (models.some((item) => item.id === evaluatorModel && item.health === "unavailable")) setEvaluatorModel(defaultModel);
+  }, [models, defaultModel, model, evaluatorModel]);
 
   async function start(event: React.FormEvent) {
     event.preventDefault();
@@ -70,7 +77,7 @@ export function RunEvaluationPage() {
           </label>
           <label>Model
             <select value={model} onChange={(event) => setModel(event.target.value as ModelId)}>
-              {supportedModels.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
+              {models.map((item) => <option key={item.id} value={item.id} disabled={item.health === "unavailable"}>{modelOptionLabel(item)}</option>)}
             </select>
           </label>
           <div className="radio-row">
@@ -87,7 +94,7 @@ export function RunEvaluationPage() {
             <div className="panel judge-settings">
               <label>Judge model
                 <select value={evaluatorModel} onChange={(event) => setEvaluatorModel(event.target.value as ModelId)}>
-                  {supportedModels.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
+                  {models.map((item) => <option key={item.id} value={item.id} disabled={item.health === "unavailable"}>{modelOptionLabel(item)}</option>)}
                 </select>
               </label>
               <label>Pass threshold
@@ -103,7 +110,7 @@ export function RunEvaluationPage() {
             </div>
           )}
           {error && <p className="error" role="alert">{error}</p>}
-          <p className="hint">Free models can be slow and occasionally rate-limited. Runs happen in the background with a progress bar.</p>
+          <p className="hint">Models are checked daily. {checkedAt ? `Last checked ${new Date(checkedAt).toLocaleString()}. ` : "No recent health check yet. "}Rate-limited models remain selectable and can recover.</p>
         </section>
 
         <section className="prompt-grid">

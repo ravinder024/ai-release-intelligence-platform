@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { supportedModels, metricDeltaTone, type ExperimentDecision, type ExperimentDetail, type MetricKind, type ModelId, type ScenarioComparison } from "@prompt-playground/shared";
+import { metricDeltaTone, type ExperimentDecision, type ExperimentDetail, type MetricKind, type ModelId, type ScenarioComparison } from "@prompt-playground/shared";
 import { getExperiment, retryExperiment, runExperiment, saveExperimentDecision } from "../api";
 import { CriterionName } from "../components/CriterionName";
+import { modelOptionLabel, useModels } from "../useModels";
 
 const decisionLabel: Record<ExperimentDecision, string> = {
   promote_candidate: "Promote Candidate",
@@ -11,6 +12,7 @@ const decisionLabel: Record<ExperimentDecision, string> = {
 };
 
 export function ExperimentDetailPage() {
+  const { models } = useModels();
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const [experiment, setExperiment] = useState<ExperimentDetail | null>(null);
@@ -179,18 +181,18 @@ export function ExperimentDetailPage() {
               <div className="retry-models">
                 <label>Baseline model
                   <select value={retryModels.baselineModel ?? ""} onChange={(event) => setRetryModels((current) => ({ ...current, baselineModel: event.target.value as ModelId }))}>
-                    {supportedModels.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
+                    {models.map((item) => <option key={item.id} value={item.id} disabled={item.health === "unavailable"}>{modelOptionLabel(item)}</option>)}
                   </select>
                 </label>
                 <label>Candidate model
                   <select value={retryModels.candidateModel ?? ""} onChange={(event) => setRetryModels((current) => ({ ...current, candidateModel: event.target.value as ModelId }))}>
-                    {supportedModels.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
+                    {models.map((item) => <option key={item.id} value={item.id} disabled={item.health === "unavailable"}>{modelOptionLabel(item)}</option>)}
                   </select>
                 </label>
                 {experiment.evaluatorModel && (
                   <label>Judge model
                     <select value={retryModels.evaluatorModel ?? ""} onChange={(event) => setRetryModels((current) => ({ ...current, evaluatorModel: event.target.value as ModelId }))}>
-                      {supportedModels.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
+                      {models.map((item) => <option key={item.id} value={item.id} disabled={item.health === "unavailable"}>{modelOptionLabel(item)}</option>)}
                     </select>
                   </label>
                 )}
