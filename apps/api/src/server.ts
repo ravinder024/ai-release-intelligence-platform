@@ -21,10 +21,15 @@ function validateProductionConfig(): void {
     "GOOGLE_CLIENT_SECRET",
     "GOOGLE_CALLBACK_URL",
     "ALLOWED_ORIGINS",
-    "OPENROUTER_API_KEY",
   ];
   const missing = required.filter((name) => !process.env[name]?.trim());
   if (missing.length > 0) throw new Error(`Missing required production configuration: ${missing.join(", ")}`);
+  // OPENROUTER_API_KEY is intentionally optional: the public deployment is bring-your-own-key.
+  // Without it, users must save their own key in Settings; only the platform-funded credit
+  // allowance is unavailable.
+  if (!process.env.OPENROUTER_API_KEY?.trim()) {
+    console.warn("OPENROUTER_API_KEY is empty — bring-your-own-key mode: users must add their own key in Settings.");
+  }
 }
 
 validateProductionConfig();
