@@ -8,6 +8,7 @@ import { authRequired, clearSessionCookie, createSession, generateResetCode, has
 import { supportedModels } from "@prompt-playground/shared";
 import { getUsageSummary } from "../services/usage.js";
 import { rateLimit } from "../rateLimit.js";
+import { isConfiguredTester } from "../testerBootstrap.js";
 import { createGoogleAuthorizationRequest, exchangeGoogleAuthorizationCode } from "../googleOidc.js";
 import {
   OIDC_NONCE_COOKIE,
@@ -197,7 +198,14 @@ authRouter.post("/auth/login", async (request, response, next) => {
     });
     const ok = user?.passwordHash ? await bcrypt.compare(payload.password, user.passwordHash) : false;
     if (!user || !ok) return response.status(401).json({ error: "Invalid credentials" });
-    if (process.env.NODE_ENV === "production" && user.role !== "admin" && process.env.ALLOW_LOCAL_LOGIN !== "true") {
+    // Public deployments use Google sign-in; local credentials are limited to the emergency
+    // Admin and the explicitly configured demo Tester (unless ALLOW_LOCAL_LOGIN=true).
+    if (
+      process.env.NODE_ENV === "production" &&
+      user.role !== "admin" &&
+      !isConfiguredTester(user.username) &&
+      process.env.ALLOW_LOCAL_LOGIN !== "true"
+    ) {
       return response.status(403).json({ error: "Local login is reserved for the emergency Admin account. Continue with Google." });
     }
 

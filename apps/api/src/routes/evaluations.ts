@@ -32,8 +32,46 @@ const MAX_ATTEMPTS = Number(process.env.EVAL_MAX_ATTEMPTS ?? 2);
 // In-memory cancellation registry for running evaluations (cooperative cancellation)
 const runCancellation = new Map<string, boolean>();
 
+// Tracks which execution currently "owns" a run. A stopped run can be resumed, which starts a
+// new execution for the same run id; the epoch stops the superseded execution from overwriting
+// the newer one's status when it eventually unwinds.
+const runExecutionEpoch = new Map<string, number>();
+
+/**
+ * Cooperatively stop a run: flags in-flight work to wind down and immediately reflects the
+ * interruption in the UI (run + owning experiment become `partial_failure`). The remaining
+ * scenarios can later be picked up again with a resume.
+ * Returns true when a running evaluation was actually flagged.
+ */
+export async function requestStop(runId: string): Promise<boolean> {
+  const run = await prisma.evaluationRun.findUnique({
+    where: { id: runId },
+    select: { status: true, experimentId: true },
+  });
+  if (!run) return false;
+  // Always set the flag: an in-flight execution checks it between attempts and jobs.
+  runCancellation.set(runId, true);
+  if (run.status !== "running") return false;
+  await prisma.evaluationRun.update({
+    where: { id: runId },
+    data: { status: "partial_failure", completedAt: new Date() },
+  });
+  if (run.experimentId) {
+    await prisma.experiment.update({ where: { id: run.experimentId }, data: { status: "partial_failure" } });
+  }
+  return true;
+}
+
 export const evaluationsRouter = Router();
 evaluationsRouter.use(rateLimit({ name: "evaluations", windowMs: 60_000, max: 20 }));
+
+/**
+ * Run ids currently being executed by this process. Used by the stale-run recovery sweep so it
+ * can only ever clean up genuinely orphaned runs and never a long-but-healthy in-flight one.
+ */
+export function activeRunIds(): string[] {
+  return [...runExecutionEpoch.keys()];
+}
 
 evaluationsRouter.post("/evaluations", authRequired, async (request, response, next) => {
   let reservationId: string | undefined;
@@ -146,12 +184,8 @@ evaluationsRouter.post("/evaluations/:id/stop", authRequired, async (request, re
     const run = await prisma.evaluationRun.findUnique({ where: { id }, select: { id: true, userId: true, status: true } });
     if (!run) return response.status(404).json({ error: "Run not found" });
     if (run.userId !== request.user!.id) return response.status(404).json({ error: "Run not found" });
-    // mark run as cancelled; executeRun checks this flag cooperatively
-    runCancellation.set(id, true);
-    if (run.status === "running") {
-      await prisma.evaluationRun.update({ where: { id }, data: { status: "partial_failure", completedAt: new Date() } });
-    }
-    return response.json({ ok: true });
+    const stopped = await requestStop(id);
+    return response.json({ ok: true, stopped });
   } catch (error) {
     next(error);
   }
@@ -199,6 +233,11 @@ evaluationsRouter.post("/evaluations/:id/restart", authRequired, async (request,
 
     // clear cancellation for the new run
     runCancellation.delete(newRun.id);
+
+    // keep the owning experiment (if any) in sync while the fresh run executes
+    if (newRun.experimentId) {
+      await prisma.experiment.update({ where: { id: newRun.experimentId }, data: { status: "running" } });
+    }
 
     void executeRun({
       runId: newRun.id,
@@ -266,8 +305,10 @@ export async function executeRun({
   provider,
   reservationId,
 }: ExecuteRunOptions) {
-  // ensure cancellation flag exists for this run
+  // ensure cancellation flag exists for this run, and claim ownership of its status
   runCancellation.set(runId, false);
+  const epoch = (runExecutionEpoch.get(runId) ?? 0) + 1;
+  runExecutionEpoch.set(runId, epoch);
 
   const jobs = selectedJobs ?? testCases.flatMap((testCase) => [
     { testCase, variant: "A" as const },
@@ -351,8 +392,9 @@ export async function executeRun({
           result = await prisma.evaluationResult.create({ data: resultData });
         }
 
-        if (runCancellation.get(runId)) return;
-
+        // NB: no cancellation check here on purpose. Cancellation only stops work that has not
+        // started yet; once a model call has succeeded we always finish the job (score included),
+        // otherwise a stopped run would leave completed results that can never be judged.
         if (evaluatorModel && outcome.ok) {
           const judgement = await judgeResult({
             evaluatorModel,
@@ -407,24 +449,39 @@ export async function executeRun({
     anyFailed = true;
     console.error(`Evaluation run ${runId} crashed:`, error);
   } finally {
+    const cancelled = runCancellation.get(runId) === true;
+    // The credit belongs to this execution, so it always settles, even if a resume took over.
     if (reservationId) {
       const completedWork = await prisma.evaluationResult.count({ where: { runId, status: "completed" } }) > 0;
       await settlePlatformCredit(reservationId, completedWork).catch((error) => console.error("Could not settle evaluation credit:", error));
     }
-    await prisma.evaluationRun.update({
-      where: { id: runId },
-      data: { status: anyFailed ? "partial_failure" : "completed", completedAt: new Date() },
-    });
-    // Sync owning experiment status (Phase 4)
-    const finishedRun = await prisma.evaluationRun.findUnique({ where: { id: runId }, select: { experimentId: true, status: true } });
-    if (finishedRun?.experimentId) {
-      await prisma.experiment.update({
-        where: { id: finishedRun.experimentId },
-        data: { status: finishedRun.status === "partial_failure" ? "partial_failure" : "completed" },
+    // A newer execution (a resume after a stop) owns this run now — do not clobber its status.
+    if (runExecutionEpoch.get(runId) === epoch) {
+      const finalStatus = anyFailed || cancelled ? "partial_failure" : "completed";
+      await prisma.evaluationRun.update({
+        where: { id: runId },
+        data: { status: finalStatus, completedAt: new Date() },
       });
+      // Sync owning experiment status (Phase 4) — but only while this run is still the
+      // experiment's latest run, so a superseded run cannot overwrite a fresh one.
+      const finishedRun = await prisma.evaluationRun.findUnique({ where: { id: runId }, select: { experimentId: true } });
+      if (finishedRun?.experimentId) {
+        const latestRun = await prisma.evaluationRun.findFirst({
+          where: { experimentId: finishedRun.experimentId },
+          orderBy: { createdAt: "desc" },
+          select: { id: true },
+        });
+        if (latestRun?.id === runId) {
+          await prisma.experiment.update({
+            where: { id: finishedRun.experimentId },
+            data: { status: finalStatus },
+          });
+        }
+      }
+      // remove cancellation flag after run finishes
+      runCancellation.delete(runId);
+      runExecutionEpoch.delete(runId);
     }
-    // remove cancellation flag after run finishes
-    runCancellation.delete(runId);
   }
 }
 

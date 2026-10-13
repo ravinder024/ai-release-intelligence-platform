@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { metricDeltaTone, type ExperimentDecision, type ExperimentDetail, type MetricKind, type ModelId, type ScenarioComparison } from "@prompt-playground/shared";
-import { getExperiment, retryExperiment, runExperiment, saveExperimentDecision } from "../api";
+import { getExperiment, resumeExperiment, runExperiment, saveExperimentDecision, stopExperiment } from "../api";
 import { CriterionName } from "../components/CriterionName";
 import { modelOptionLabel, useModels } from "../useModels";
 
@@ -20,6 +20,7 @@ export function ExperimentDetailPage() {
   const [decision, setDecision] = useState<ExperimentDecision | null>(null);
   const [decisionNote, setDecisionNote] = useState("");
   const [isSaving, setIsSaving] = useState(false);
+  const [isBusy, setIsBusy] = useState(false);
   const [expandedScenarios, setExpandedScenarios] = useState<Set<string>>(new Set());
   const [showPrompts, setShowPrompts] = useState(false);
   const [retryModels, setRetryModels] = useState<{ id?: string; baselineModel?: ModelId; candidateModel?: ModelId; evaluatorModel?: ModelId }>({});
@@ -47,20 +48,17 @@ export function ExperimentDetailPage() {
   }, [id]);
 
   useEffect(() => {
-    let cancelled = false;
-    let timer: ReturnType<typeof setInterval> | undefined;
-    void (async () => {
-      const first = await load();
-      if (cancelled || !first || first.status !== "running") return;
-      timer = setInterval(async () => {
-        const current = await load();
-        if (cancelled || !current || current.status !== "running") {
-          if (timer) clearInterval(timer);
-        }
-      }, 3000);
-    })();
-    return () => { cancelled = true; if (timer) clearInterval(timer); };
+    void load();
   }, [load]);
+
+  // Poll while the experiment is running. Keyed on the status so polling restarts
+  // automatically after a Resume (and stops as soon as a run is Stopped or finishes).
+  const isRunning = experiment?.status === "running";
+  useEffect(() => {
+    if (!isRunning) return;
+    const timer = setInterval(() => { void load(); }, 3000);
+    return () => clearInterval(timer);
+  }, [isRunning, load]);
 
   async function saveDecision() {
     if (!experiment || !decision) return;
@@ -87,18 +85,36 @@ export function ExperimentDetailPage() {
     }
   }
 
-  async function retryFailed() {
+  async function stopRun() {
     if (!experiment) return;
+    setIsBusy(true);
     setError(null);
     try {
-      await retryExperiment(experiment.id, {
+      await stopExperiment(experiment.id);
+      await load();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Could not stop the run");
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  /** Continue the current run: only scenarios that are missing or failed are re-evaluated. */
+  async function resumeRun() {
+    if (!experiment) return;
+    setIsBusy(true);
+    setError(null);
+    try {
+      await resumeExperiment(experiment.id, {
         ...(retryModels.baselineModel ? { baselineModel: retryModels.baselineModel } : {}),
         ...(retryModels.candidateModel ? { candidateModel: retryModels.candidateModel } : {}),
         ...(retryModels.evaluatorModel ? { evaluatorModel: retryModels.evaluatorModel } : {}),
       });
       await load();
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Could not retry failed scenarios");
+      setError(caught instanceof Error ? caught.message : "Could not resume the run");
+    } finally {
+      setIsBusy(false);
     }
   }
 
@@ -107,10 +123,11 @@ export function ExperimentDetailPage() {
 
   const { metrics, criteria, scenarios, regressions } = experiment;
   const { baseline, candidate, comparison } = metrics;
-  const isRunning = experiment.status === "running";
   const percent = experiment.latestRun?.progress?.total
     ? Math.round((experiment.latestRun.progress.completed / experiment.latestRun.progress.total) * 100)
     : 0;
+  const remainingScenarios = experiment.completion?.retryable ?? 0;
+  const canResume = !isRunning && Boolean(experiment.latestRun) && remainingScenarios > 0;
 
   return (
     <section>
@@ -123,10 +140,38 @@ export function ExperimentDetailPage() {
           {experiment.status !== "running" && experiment.latestRun && (
             <button type="button" className="secondary" onClick={() => navigate(`/experiments/${experiment.id}/iterations/new`)}>Create Next Iteration</button>
           )}
-          {experiment.status !== "running" && (
-            <button type="button" className="secondary" onClick={() => void rerun()}>Run again</button>
+          {isRunning ? (
+            <button type="button" className="secondary" disabled={isBusy} onClick={() => void stopRun()}>
+              {isBusy ? "Stopping…" : "Stop"}
+            </button>
+          ) : (
+            <>
+              {experiment.latestRun && (
+                <button
+                  type="button"
+                  className="secondary"
+                  disabled={isBusy || !canResume}
+                  title={canResume
+                    ? "Continue this run: only the evaluations that are missing or failed are run again"
+                    : "Nothing left to resume — every scenario has been evaluated for both configurations"}
+                  onClick={() => void resumeRun()}
+                >
+                  {isBusy ? "Resuming…" : canResume ? `Resume (${experiment.completion?.retryable ?? 0})` : "Resume"}
+                </button>
+              )}
+              <button type="button" className="secondary" disabled={isBusy} onClick={() => void rerun()}>
+                {experiment.latestRun ? "Restart" : "Run experiment"}
+              </button>
+            </>
           )}
         </div>
+        {experiment.latestRun && (
+          <p className="hint run-controls-hint">
+            <strong>Stop</strong> halts the run and keeps every scenario already evaluated ·{" "}
+            <strong>Resume</strong> continues that run where it left off ·{" "}
+            <strong>Restart</strong> starts a brand-new run of all scenarios (history is kept).
+          </p>
+        )}
         {experiment.hypothesis && <p className="experiment-hypothesis">Hypothesis: {experiment.hypothesis}</p>}
         <p className="experiment-dataset">
           Dataset: <Link to={`/datasets/${experiment.datasetId}`} className="back-link">{experiment.datasetName}</Link> · {experiment.testCaseCount} scenario{experiment.testCaseCount === 1 ? "" : "s"}
@@ -177,7 +222,7 @@ export function ExperimentDetailPage() {
             <p className="hint">Run the experiment to evaluate both configurations.</p>
           ) : experiment.completion.retryable > 0 ? (
             <>
-              <p className="hint">{experiment.completion.retryable} scenario{experiment.completion.retryable === 1 ? "" : "s"} require retry (execution or evaluation failures). Successful results are kept. If your current model is rate-limited, switch to another below.</p>
+              <p className="hint">{experiment.completion.retryable} evaluation{experiment.completion.retryable === 1 ? "" : "s"} still need results (stopped, failed, or not evaluated yet) — that is one result per configuration. Successful results are kept. If your current model is rate-limited, switch to another below, then resume.</p>
               <div className="retry-models">
                 <label>Baseline model
                   <select value={retryModels.baselineModel ?? ""} onChange={(event) => setRetryModels((current) => ({ ...current, baselineModel: event.target.value as ModelId }))}>
@@ -197,7 +242,9 @@ export function ExperimentDetailPage() {
                   </label>
                 )}
               </div>
-              <button type="button" className="primary" onClick={() => void retryFailed()}>Retry {experiment.completion.retryable} failed scenario{experiment.completion.retryable === 1 ? "" : "s"}</button>
+              <button type="button" className="primary" disabled={isBusy} onClick={() => void resumeRun()}>
+                {isBusy ? "Resuming…" : `Resume ${experiment.completion.retryable} pending evaluation${experiment.completion.retryable === 1 ? "" : "s"}`}
+              </button>
             </>
           ) : (
             <p className="hint">All scenarios evaluated successfully.</p>

@@ -110,6 +110,8 @@ h2 { font-size: 20px; } h3 { margin: 0 0 12px; font-size: 15px; }
 .experiment-title-row h1 { margin: 0; }
 .experiment-hypothesis { color: #b6b6be; margin: 12px 0 0; font-size: 14px; }
 .experiment-dataset { color: #a6a6ad; margin: 8px 0 0; font-size: 13px; }
+.run-controls-hint { margin: 10px 0 0; }
+.run-controls-hint strong { color: #a6a6ad; font-weight: 650; }
 
 .summary-table-wrap { padding: 8px 16px; margin-bottom: 24px; overflow-x: auto; }
 .summary-table { width: 100%; border-collapse: collapse; }

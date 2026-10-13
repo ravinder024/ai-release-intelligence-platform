@@ -1,6 +1,7 @@
 import dotenv from "dotenv";
 import { resolve } from "node:path";
 import { bootstrapAdmin } from "./adminBootstrap.js";
+import { bootstrapTester } from "./testerBootstrap.js";
 import { createApp, currentDirectory, recoverStaleRuns } from "./app.js";
 
 dotenv.config({ path: resolve(currentDirectory, "../.env") });
@@ -28,6 +29,7 @@ function validateProductionConfig(): void {
 
 validateProductionConfig();
 await bootstrapAdmin();
+await bootstrapTester();
 
 const app = createApp();
 

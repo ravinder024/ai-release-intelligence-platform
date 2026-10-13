@@ -1,5 +1,6 @@
 import { prisma } from "../prisma.js";
 import { buildExperimentDetail, createNextIteration, retryExperimentFailures, startExperimentRun } from "../routes/experiments.js";
+import { recoverStaleRuns } from "../app.js";
 import type { ModelProvider } from "../provider.js";
 
 let failures = 0;
@@ -292,8 +293,118 @@ async function run() {
     check("I1. historical scenario input preserved from snapshot", detailAfterEdit?.scenarios.some((s) => s.input === "Escalation"), true);
     check("I2. changed input not shown for historical run", detailAfterEdit?.scenarios.some((s) => s.input === "Escalation CHANGED AFTER RUN"), false);
 
+    // --- Stop/Resume: a completed result that was never judged must be resumable (Test Group J) ---
+    // Reproduces the state a Stop can leave behind: jobs in flight when the run was interrupted.
+    const stoppedExperiment = await prisma.experiment.create({
+      data: {
+        name: "Stopped Run Test",
+        hypothesis: null,
+        datasetId: dataset.id,
+        baselinePrompt: "Stopped baseline",
+        baselineModel: BASELINE_MODEL,
+        candidatePrompt: "Stopped candidate",
+        candidateModel: CANDIDATE_MODEL,
+        evaluatorModel: EVALUATOR_MODEL,
+        evaluatorThreshold: 70,
+        status: "draft",
+      },
+    });
+    await startExperimentRun(stoppedExperiment.id, { provider: makeFakeProvider(), awaitRun: true });
+
+    const stoppedRun = await prisma.evaluationRun.findFirst({
+      where: { experimentId: stoppedExperiment.id },
+      orderBy: { createdAt: "desc" },
+      include: { results: true },
+    });
+    const unjudgedResults = stoppedRun!.results.filter((r) => r.variant === "B").slice(0, 2);
+    await prisma.evaluationJudgement.deleteMany({ where: { resultId: { in: unjudgedResults.map((r) => r.id) } } });
+
+    const stoppedDetail = await buildExperimentDetail(stoppedExperiment.id);
+    check("J1. unjudged results are not counted as completed", stoppedDetail?.completion.candidate.completed, 3);
+    check("J2. unjudged results are resumable", stoppedDetail?.completion.retryable, 2);
+    check("J3. judged baseline unaffected", stoppedDetail?.completion.baseline.completed, 5);
+
+    const resumeProvider = makeRetryProvider();
+    resumeProvider.setFailCandidate(false);
+    const resumeResult = await retryExperimentFailures(stoppedExperiment.id, { provider: resumeProvider, awaitRun: true });
+    check("J4. resume picked up the 2 unjudged pairs", resumeResult?.retried, 2);
+    check("J5. resume made exactly 2 candidate calls", resumeProvider.getCandidateCalls(), 2);
+    check("J6. resume made no baseline calls", resumeProvider.getBaselineCalls(), 0);
+
+    const stoppedAfter = await buildExperimentDetail(stoppedExperiment.id);
+    check("J7. candidate complete after resume", stoppedAfter?.completion.candidate.completed, 5);
+    check("J8. nothing left to resume", stoppedAfter?.completion.retryable, 0);
+    const stillUnjudged = await prisma.evaluationResult.count({
+      where: { runId: stoppedRun!.id, status: "completed", judgement: { is: null } },
+    });
+    check("J9. no completed result is left unjudged", stillUnjudged, 0);
+
+    // Without a judge, a completed result is finished work and must never look resumable.
+    const noJudgeExperiment = await prisma.experiment.create({
+      data: {
+        name: "No Judge Test",
+        hypothesis: null,
+        datasetId: dataset.id,
+        baselinePrompt: "No judge baseline",
+        baselineModel: BASELINE_MODEL,
+        candidatePrompt: "No judge candidate",
+        candidateModel: CANDIDATE_MODEL,
+        evaluatorModel: null,
+        status: "draft",
+      },
+    });
+    await startExperimentRun(noJudgeExperiment.id, { provider: makeFakeProvider(), awaitRun: true });
+    const noJudgeDetail = await buildExperimentDetail(noJudgeExperiment.id);
+    check("J10. without a judge, completed results are complete", noJudgeDetail?.completion.baseline.completed, 5);
+    check("J11. without a judge, nothing is falsely resumable", noJudgeDetail?.completion.retryable, 0);
+
+    // --- Stale-run sweep must not kill a run that is still executing (Test Group K) ---
+    // Previously the 2-minute sweep marked EVERY `running` row as partial_failure, so a slow but
+    // healthy experiment looked broken and the UI stopped polling mid-run.
+    const sweepExperiment = await prisma.experiment.create({
+      data: {
+        name: "Sweep Test",
+        hypothesis: null,
+        datasetId: dataset.id,
+        baselinePrompt: "Sweep baseline",
+        baselineModel: BASELINE_MODEL,
+        candidatePrompt: "Sweep candidate",
+        candidateModel: CANDIDATE_MODEL,
+        evaluatorModel: EVALUATOR_MODEL,
+        evaluatorThreshold: 70,
+        status: "draft",
+      },
+    });
+    let sweepFired = false;
+    const sweepProvider: ModelProvider = {
+      async execute(opts: Parameters<ModelProvider["execute"]>[0]) {
+        if (!sweepFired) {
+          sweepFired = true;
+          await recoverStaleRuns(); // simulate the periodic sweep firing while the run is in flight
+        }
+        return makeFakeProvider().execute(opts);
+      },
+    };
+    const sweepRun = await startExperimentRun(sweepExperiment.id, { provider: sweepProvider, awaitRun: true });
+    check("K0. sweep test run created", sweepRun !== null && sweepRun !== "conflict", true);
+    if (sweepRun === null || sweepRun === "conflict") throw new Error("Expected a run");
+    check("K1. sweep ran during the evaluation", sweepFired, true);
+    const sweepExperimentAfter = await prisma.experiment.findUnique({ where: { id: sweepExperiment.id }, select: { status: true } });
+    check("K2. in-flight run was NOT marked failed by the sweep", sweepExperimentAfter?.status, "completed");
+    const sweepRunAfter = await prisma.evaluationRun.findUnique({ where: { id: sweepRun.id }, select: { status: true } });
+    check("K3. in-flight run still recorded as completed", sweepRunAfter?.status, "completed");
+
+    // A genuinely orphaned run (nothing executing it) is still cleaned up.
+    const orphanRun = await prisma.evaluationRun.create({
+      data: { datasetId: dataset.id, model: BASELINE_MODEL, promptA: "a", promptB: "b", status: "running" },
+    });
+    await recoverStaleRuns();
+    const orphanAfter = await prisma.evaluationRun.findUnique({ where: { id: orphanRun.id }, select: { status: true } });
+    check("K4. orphaned running run is recovered", orphanAfter?.status, "partial_failure");
+    await prisma.evaluationRun.deleteMany({ where: { id: orphanRun.id } }).catch(() => undefined);
+
     // Clean up extra experiments created for retry/iteration tests
-    for (const id of [retryExperiment.id, iter2?.id, iter3?.id]) {
+    for (const id of [retryExperiment.id, iter2?.id, iter3?.id, stoppedExperiment.id, noJudgeExperiment.id, sweepExperiment.id]) {
       if (id) await prisma.experiment.deleteMany({ where: { id } }).catch(() => undefined);
     }
   } finally {

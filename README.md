@@ -38,6 +38,8 @@ Requirements: Node.js 18+, PostgreSQL running locally.
    - `DATABASE_URL` (PostgreSQL URL)
    - `ENCRYPTION_KEY` and `SESSION_COOKIE_SECRET` (generate once, e.g. `openssl rand -hex 32`)
    - `OPENROUTER_API_KEY` (optional locally — with accounts, each user saves their own key in Settings)
+   - `ADMIN_USERNAME` / `ADMIN_PASSWORD` — emergency Admin sign-in (created or refreshed on every server start)
+   - `TESTER_USERNAME` / `TESTER_PASSWORD` — *optional* demo account for reviewers (a normal, non-admin user with its own private workspace). Also created or refreshed on every server start. Leave blank to skip.
 3. Migrate and seed sample data:
    ```bash
    npm run db:migrate

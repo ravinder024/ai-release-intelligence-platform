@@ -184,13 +184,30 @@ Because the configuration is snapshotted at run time, later changes to the datas
 
 #### Refinements: retry, evaluation config, recommendation, iterations
 
-- **Partial retry** — if some scenarios fail to evaluate (timeout, rate limit, evaluator error), the detail page shows an "Evaluation status" section with per-configuration completion counts and a **Retry failed scenarios** button. Retrying only re-runs the failed scenarios; successful results are never re-run or overwritten. A low judge score is a quality failure, not an execution failure — it is never retried.
+- **Partial retry** — if some scenarios fail to evaluate (timeout, rate limit, evaluator error), the detail page shows an "Evaluation status" section with per-configuration completion counts and a **Resume** button. Resuming only re-runs the missing or failed scenarios; successful results are never re-run or overwritten. A low judge score is a quality failure, not an execution failure — it is never retried.
 - **Evaluation configuration** — experiment creation has a dedicated **EVALUATION CONFIGURATION** section (Human judgement vs LLM-as-a-Judge, judge model, pass threshold, judge prompt). The evaluator is separate from the target model, and this is shown clearly on both the wizard and the detail page.
 - **Metric colors** — quality metrics (score, pass rate) are green when the candidate improves and red when it declines; operational metrics (latency, tokens, cost) are green when lower. Zero change is neutral.
 - **Criterion tooltips** — criteria such as Accuracy and Completeness show an ⓘ icon explaining their meaning.
 - **Recommendation** — the detail page shows an evidence-based **Recommendation** (Promote Candidate / Keep Baseline / Continue Experiment / Insufficient data) built from deterministic rules. It is advisory only — you still make the final decision.
 - **Iterations** — choosing **Continue Experiment** creates a **new iteration** (previous candidate becomes the new baseline) instead of overwriting results. Iterations are numbered and listed on the detail page; each is an immutable snapshot. If you change the evaluator configuration (or dataset) between iterations, a **comparability warning** is shown.
 - **Reproducibility** — each result stores a snapshot of the test-case input, golden answer, and rubric, so historical experiments keep showing the original benchmark even if the dataset changes later.
+
+#### Run controls: Stop, Resume, Restart
+
+An experiment can take a while on a large dataset, and free models are sometimes rate-limited. Three controls at the top of the Experiment Detail page let you steer a run without losing work:
+
+| Control | When it is available | What it does |
+| --- | --- | --- |
+| **Stop** | While the run is in progress | Halts the run. Every scenario already evaluated is **kept**; the rest stay pending. The experiment moves out of "running" and shows as incomplete. |
+| **Resume** (shows the number of scenarios left) | When a run is stopped, partially failed, or has missing results | Continues **the same run** from where it stopped — only the scenarios that are missing or failed are evaluated again. Successful results are never re-run or overwritten. |
+| **Restart** | Whenever a previous run exists | Starts a **brand-new run** of every scenario with the current configuration. The previous run's results are kept in history; nothing is deleted. |
+
+Notes:
+
+- **Resume** is also the tool for rate limits. If scenarios failed because a model was rate-limited, open the "Evaluation status" panel, switch the Baseline / Candidate / Judge model to a different one, then resume — the finished results stay untouched.
+- **Restart** consumes one platform-funded evaluation credit (same as a first run); **Resume** continues the existing run and does not.
+- A low judge score is a **quality** failure, not an execution failure. Those results are already complete, so they are never re-run by Resume — that is a real finding, not an error.
+- Progress updates every few seconds on its own, including after a Resume.
 
 ## Updating this manual
 

@@ -40,6 +40,19 @@ export async function runExperiment(id: string): Promise<EvaluationRun> {
   return api.post<EvaluationRun>(`/api/experiments/${id}/run`, {});
 }
 
+/** Stop the experiment's running evaluation. Scenarios already done are kept. */
+export async function stopExperiment(id: string): Promise<{ ok: boolean; stopped: boolean }> {
+  return api.post<{ ok: boolean; stopped: boolean }>(`/api/experiments/${id}/stop`, {});
+}
+
+/** Continue the current run: only the scenarios that are missing or failed are re-evaluated. */
+export async function resumeExperiment(
+  id: string,
+  models?: { baselineModel?: ModelId; candidateModel?: ModelId; evaluatorModel?: ModelId },
+): Promise<{ resumed: number; remaining: number }> {
+  return api.post<{ resumed: number; remaining: number }>(`/api/experiments/${id}/resume`, models ?? {});
+}
+
 export async function retryExperiment(
   id: string,
   models?: { baselineModel?: ModelId; candidateModel?: ModelId; evaluatorModel?: ModelId },

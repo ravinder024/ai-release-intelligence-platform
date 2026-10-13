@@ -25,7 +25,8 @@ Management thinking, not just software engineering.
 - **Phase 4 — Experiments & Release Intelligence: COMPLETE.** First-class
   Experiments (draft -> baseline vs candidate -> run -> results -> recommendation),
   partial-failure retry with model switching, iteration chains, comparability
-  warnings, product decision. Summary: `docs/PRDs/phase4_prd.md`.
+  warnings, product decision. **Run controls: Stop / Resume / Restart** on the
+  Experiment Detail page. Summary: `docs/PRDs/phase4_prd.md`.
 - **Phase 5 — Accounts (SSO): COMPLETE.** Username/password sign up, sign in,
   forgot-password with an in-app reset code. Each user brings their own OpenRouter
   key (encrypted on their account) and gets a private workspace (own datasets,
@@ -68,6 +69,14 @@ Management thinking, not just software engineering.
   OpenRouter keys encrypted at rest (AES-256-GCM via `ENCRYPTION_KEY`).
   Multi-tenant: samples (`userId null`) shared/read-only; all user data is private.
   `npm run db:prune` wipes user data + non-sample datasets (deploy cleanup).
+  Accounts are (re)created from `.env` on every server start: `ADMIN_USERNAME` /
+  `ADMIN_PASSWORD` (emergency Admin, can sign in with username or email) and the
+  optional demo `TESTER_USERNAME` / `TESTER_PASSWORD` (normal non-admin user,
+  allowed to use local login in production).
+- **Run controls:** `POST /api/experiments/:id/stop` (cooperative cancel, keeps
+  finished work), `.../resume` (continues the same run: only missing/failed/unjudged
+  evaluations), `.../run` (Restart = brand-new run). `.../retry` is the older alias
+  for resume. End-to-end check: `node apps/api/scripts/verify-customer-support-experiment.mjs`.
 - The API server serves the built web app on a single port (default `5101`);
   `GET /api/manual` serves the living User Manual (`docs/User manual.md`) for the
   in-app Manual page.

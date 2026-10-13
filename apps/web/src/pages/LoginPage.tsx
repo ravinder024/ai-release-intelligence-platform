@@ -33,7 +33,7 @@ export function LoginPage() {
         <button className="google-button" type="button" onClick={() => { window.location.href = "/api/auth/google"; }}>
           Continue with Google
         </button>
-        <div className="auth-divider"><span>or emergency admin login</span></div>
+        <div className="auth-divider"><span>or sign in with a username and password</span></div>
         <form onSubmit={submit} className="auth-form">
           <label>Email or username
             <input type="text" value={email} onChange={(e) => setEmail(e.target.value)} required autoComplete="username" />

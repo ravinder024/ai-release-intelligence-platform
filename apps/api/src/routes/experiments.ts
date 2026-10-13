@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../prisma.js";
-import { executeRun, findRun, type TestCase } from "./evaluations.js";
+import { executeRun, findRun, requestStop, type TestCase } from "./evaluations.js";
 import { getUserProvider, resolveUserProvider } from "../services/userProvider.js";
 import { attachReservationToRun, releasePlatformCredit } from "../services/usage.js";
 import { authRequired, optionalAuth } from "../auth.js";
@@ -197,6 +197,53 @@ experimentsRouter.post("/experiments/:id/run", authRequired, async (req, res, ne
   }
 });
 
+// POST /api/experiments/:id/stop — stop the experiment's currently running evaluation.
+// Scenarios already evaluated are kept; the rest stay pending and can be resumed.
+experimentsRouter.post("/experiments/:id/stop", authRequired, async (req, res, next) => {
+  try {
+    const existing = await prisma.experiment.findUnique({ where: { id: req.params.id }, select: { userId: true } });
+    if (!existing) return res.status(404).json({ error: "Experiment not found" });
+    if (existing.userId !== req.user!.id) return res.status(404).json({ error: "Experiment not found" });
+
+    const latestRun = await prisma.evaluationRun.findFirst({
+      where: { experimentId: req.params.id },
+      orderBy: { createdAt: "desc" },
+      select: { id: true, status: true },
+    });
+    if (!latestRun || latestRun.status !== "running") return res.json({ ok: true, stopped: false });
+
+    const stopped = await requestStop(latestRun.id);
+    return res.json({ ok: true, stopped });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /api/experiments/:id/resume — continue the current run from where it stopped.
+// Only scenarios that are missing or failed are re-evaluated; successful results are kept.
+experimentsRouter.post("/experiments/:id/resume", authRequired, async (req, res, next) => {
+  try {
+    const overrides = retrySchema.parse(req.body ?? {});
+    const existing = await prisma.experiment.findUnique({ where: { id: req.params.id }, select: { userId: true } });
+    if (!existing) return res.status(404).json({ error: "Experiment not found" });
+    if (existing.userId !== req.user!.id) return res.status(404).json({ error: "Experiment not found" });
+    const provider = await getUserProvider(req.user!.id);
+    const result = await retryExperimentFailures(req.params.id, {
+      provider,
+      models: {
+        ...(overrides.baselineModel ? { baselineModel: overrides.baselineModel } : {}),
+        ...(overrides.candidateModel ? { candidateModel: overrides.candidateModel } : {}),
+        ...(overrides.evaluatorModel ? { evaluatorModel: overrides.evaluatorModel } : {}),
+      },
+    });
+    if (result === null) return res.status(404).json({ error: "Experiment not found" });
+    if ("conflict" in result) return res.status(409).json({ error: "Experiment is already running" });
+    return res.json({ resumed: result.retried, remaining: result.remaining });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // POST /api/experiments/:id/retry — re-evaluate ONLY the failed scenarios (execution/evaluator failures).
 // Optional model overrides let you switch to a working LLM if the current one is rate-limited.
 experimentsRouter.post("/experiments/:id/retry", authRequired, async (req, res, next) => {
@@ -313,15 +360,23 @@ export async function retryExperimentFailures(
     position: tc.position,
   }));
 
-  // Retryable = missing result, execution failure, or evaluator failure.
-  // A successfully judged low score (quality failure) is NOT retryable.
+  // Use model overrides when provided (e.g. a working LLM), else the experiment's frozen config.
+  const baselineModel = opts?.models?.baselineModel ?? (experiment.baselineModel as ModelId);
+  const candidateModel = opts?.models?.candidateModel ?? (experiment.candidateModel as ModelId);
+  const evaluatorModel = opts?.models?.evaluatorModel ?? ((experiment.evaluatorModel as ModelId) ?? undefined);
+  const judgeExpected = Boolean(evaluatorModel ?? latestRun.evaluatorModel);
+
+  // Resumable = missing result, execution failure, evaluator failure, or a result that was never
+  // judged (the jobs still in flight when a run was stopped). A successfully judged low score is a
+  // quality failure, not a gap — it is never re-run.
   const retryable: Array<{ testCase: TestCase; variant: "A" | "B" }> = [];
   for (const testCase of testCases) {
     for (const variant of ["A", "B"] as const) {
       const result = latestRun.results.find((r) => r.testCaseId === testCase.id && r.variant === variant);
       if (!result) { retryable.push({ testCase, variant }); continue; }
       const judgeFailed = result.judgement?.status === "failed";
-      if (result.status === "failed" || judgeFailed) retryable.push({ testCase, variant });
+      const judgeMissing = judgeExpected && !result.judgement;
+      if (result.status === "failed" || judgeFailed || judgeMissing) retryable.push({ testCase, variant });
     }
   }
 
@@ -329,11 +384,6 @@ export async function retryExperimentFailures(
 
   await prisma.evaluationRun.update({ where: { id: latestRun.id }, data: { status: "running" } });
   await prisma.experiment.update({ where: { id: experiment.id }, data: { status: "running" } });
-
-  // Use model overrides when provided (e.g. a working LLM), else the experiment's frozen config.
-  const baselineModel = opts?.models?.baselineModel ?? (experiment.baselineModel as ModelId);
-  const candidateModel = opts?.models?.candidateModel ?? (experiment.candidateModel as ModelId);
-  const evaluatorModel = opts?.models?.evaluatorModel ?? ((experiment.evaluatorModel as ModelId) ?? undefined);
 
   const runPromise = executeRun({
     runId: latestRun.id,
@@ -362,6 +412,7 @@ export async function retryExperimentFailures(
     for (const variant of ["A", "B"] as const) {
       const r = updatedRun?.results.find((x) => x.testCaseId === testCase.id && x.variant === variant);
       if (!r || r.status === "failed" || r.judgement?.status === "failed") remaining++;
+      else if (judgeExpected && !r.judgement) remaining++;
     }
   }
 
@@ -564,6 +615,7 @@ function buildScenarioTestCases(
 function computeCompletion(
   results: Array<{ testCaseId: string; variant: string; status: string; judgement: { status: string } | null }>,
   testCaseIds: string[],
+  judgeExpected = false,
 ) {
   const baseline = { completed: 0, total: testCaseIds.length };
   const candidate = { completed: 0, total: testCaseIds.length };
@@ -574,7 +626,10 @@ function computeCompletion(
       const bucket = variant === "A" ? baseline : candidate;
       if (!r) { retryable += 1; continue; }
       const judgeFailed = r.judgement?.status === "failed";
-      if (r.status === "completed" && !judgeFailed) bucket.completed += 1;
+      // When a judge is configured, a result without a judgement is not finished work: it must
+      // still be scored (this happens to jobs that were in flight when a run was stopped).
+      const judgeMissing = judgeExpected && !r.judgement;
+      if (r.status === "completed" && !judgeFailed && !judgeMissing) bucket.completed += 1;
       else retryable += 1;
     }
   }
@@ -653,7 +708,11 @@ export async function buildExperimentDetail(id: string): Promise<ExperimentDetai
     iterations,
     comparabilityWarning,
     completion: latestRun
-      ? computeCompletion(latestRun.results, experiment.dataset.testCases.map((tc) => tc.id))
+      ? computeCompletion(
+          latestRun.results,
+          experiment.dataset.testCases.map((tc) => tc.id),
+          Boolean(latestRun.evaluatorModel ?? experiment.evaluatorModel),
+        )
       : { baseline: { completed: 0, total }, candidate: { completed: 0, total }, retryable: 0 },
     metrics: {
       baseline: emptyMetrics(),

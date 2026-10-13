@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { existsSync, readFileSync } from "node:fs";
 import { comparisonsRouter } from "./routes/comparisons.js";
 import { datasetsRouter } from "./routes/datasets.js";
-import { evaluationsRouter } from "./routes/evaluations.js";
+import { evaluationsRouter, activeRunIds } from "./routes/evaluations.js";
 import { modelsRouter } from "./routes/models.js";
 import { experimentsRouter } from "./routes/experiments.js";
 import { authRouter } from "./routes/auth.js";
@@ -17,12 +17,20 @@ import { prisma } from "./prisma.js";
 
 export const currentDirectory = dirname(fileURLToPath(import.meta.url));
 
-/** Marks interrupted runs as failed. Shared by startup and the admin endpoint. */
+/**
+ * Marks interrupted (orphaned) runs as failed. Shared by startup and the periodic sweep.
+ *
+ * Runs still being executed by this process are never touched: a long experiment on slow/free
+ * models can legitimately stay in `running` for many minutes, and marking it failed would make the
+ * UI stop polling while results are still arriving. At startup nothing is in flight, so every
+ * `running` row left over from a previous process is correctly cleaned up.
+ */
 export async function recoverStaleRuns(): Promise<void> {
   if (!process.env.DATABASE_URL) return;
   try {
+    const inFlight = activeRunIds();
     const result = await prisma.evaluationRun.updateMany({
-      where: { status: "running" },
+      where: { status: "running", ...(inFlight.length > 0 ? { id: { notIn: inFlight } } : {}) },
       data: { status: "partial_failure", completedAt: new Date() },
     });
     if (result.count > 0) console.log(`Marked ${result.count} interrupted evaluation run(s) as partial_failure.`);
