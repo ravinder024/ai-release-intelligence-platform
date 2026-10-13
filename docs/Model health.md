@@ -36,12 +36,15 @@ npm run model-health:check
 
 ## Contabo VPS cron
 
-On the VPS, install a daily 6:00 AM check under the same non-root account as the app. Ensure this account can read the deployment `.env` and write `apps/api/model-health.json`.
+On the VPS, run the installer from the cloned repo as the same non-root account that runs the app. It adds or replaces one tagged crontab entry and runs the QA check every six hours. Ensure this account can read the deployment `.env` and write `apps/api/model-health.json` and `apps/api/model-health-cron.log`.
 
-```cron
-0 6 * * * cd /var/www/arip && /usr/bin/node apps/api/dist/scripts/qaModels.js >> /var/log/arip/model-health.log 2>&1
+```bash
+cd /var/www/arip
+npm ci
+npm run build -w @prompt-playground/api
+npm run model-health:install-cron
 ```
 
-The QA script loads `/var/www/arip/.env` itself. Keep `OPENROUTER_API_KEY` server-side; do not put it in the crontab line. After the first run, `GET /api/models` immediately exposes the refreshed status. The Express app does not need to restart.
+The installed schedule is `0 */6 * * *`. The QA script loads the repo-root `.env` itself. Keep `OPENROUTER_API_KEY` server-side; do not put it in the crontab line. Output is appended to `apps/api/model-health-cron.log`; the JSON report is replaced atomically. After a run, `GET /api/models` exposes the refreshed status without restarting Express.
 
-To change the check time, edit the single cron schedule. No source model IDs are automatically added from OpenRouter's wider catalog: adding a model to the application's allowlist remains a deliberate code review decision so the free-only security boundary is preserved.
+To inspect or remove the entry, use `crontab -l` or `crontab -e` and remove the lines tagged `# ARIP-OpenRouter-Free-Model-Health`. No source model IDs are automatically added from OpenRouter's wider catalog: adding a model to the application's allowlist remains a deliberate code review decision so the free-only security boundary is preserved.

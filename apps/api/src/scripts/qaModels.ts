@@ -1,7 +1,7 @@
 import { config as loadEnv } from "dotenv";
 import path from "path";
 import { fileURLToPath } from "url";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, rename, writeFile } from "node:fs/promises";
 
 // Ensure we load the repository root .env regardless of CWD when invoked from tooling
 const __filename = fileURLToPath(import.meta.url);
@@ -37,7 +37,9 @@ export async function runModelQa() {
   }
 
   await mkdir(path.dirname(reportPath), { recursive: true });
-  await writeFile(reportPath, JSON.stringify({ checkedAt: new Date().toISOString(), models: results }, null, 2), "utf8");
+  const tempPath = `${reportPath}.${process.pid}.tmp`;
+  await writeFile(tempPath, JSON.stringify({ checkedAt: new Date().toISOString(), models: results }, null, 2), "utf8");
+  await rename(tempPath, reportPath);
   return results;
 }
 

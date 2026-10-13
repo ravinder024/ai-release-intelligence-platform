@@ -13,7 +13,8 @@
     "db:invalidate-sessions": "npm run db:invalidate-sessions -w @prompt-playground/api",
     "db:backfill-ownership": "npm run db:backfill-ownership -w @prompt-playground/api",
     "model-health:check": "npm run model-health:check -w @prompt-playground/api",
-    "model-health:register-task": "npm run model-health:register-task -w @prompt-playground/api"
+    "model-health:register-task": "npm run model-health:register-task -w @prompt-playground/api",
+    "model-health:install-cron": "npm run model-health:install-cron -w @prompt-playground/api"
   },
   "devDependencies": {
     "concurrently": "^9.1.2"
