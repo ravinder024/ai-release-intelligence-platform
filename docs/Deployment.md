@@ -49,6 +49,9 @@ ENV
 
 ```bash
 npm ci
+# `npm ci` reinstalls node_modules but does NOT regenerate the Prisma client;
+# building without it fails with "Prisma has no exported member …" errors.
+npx prisma generate --schema apps/api/prisma/schema.prisma
 npm run build
 cd apps/api && npx prisma migrate deploy && cd ../..
 npm run db:seed      # creates the 2 sample datasets
@@ -138,7 +141,7 @@ Certbot automatically installs the certificate and redirects HTTP → HTTPS. Ren
 | --- | --- |
 | See logs | `journalctl -u arip -f` |
 | Restart the app | `sudo systemctl restart arip` |
-| Deploy a new version | `cd /var/www/arip && git pull && npm ci && npm run build && cd apps/api && npx prisma migrate deploy && cd ../.. && sudo systemctl restart arip` |
+| Deploy a new version | `cd /var/www/arip && git pull && npm ci && npx prisma generate --schema apps/api/prisma/schema.prisma && npm run build && cd apps/api && npx prisma migrate deploy && cd ../.. && sudo systemctl restart arip` |
 | Reset to samples-only | `npm run db:prune` |
 | Renew TLS (auto) | `sudo certbot renew` |
 
