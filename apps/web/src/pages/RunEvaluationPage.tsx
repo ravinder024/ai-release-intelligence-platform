@@ -1,23 +1,26 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { type DatasetDetail, type EvaluationRun, type ModelId } from "@prompt-playground/shared";
+import { type DatasetDetail, type EvaluationRun } from "@prompt-playground/shared";
 import { api } from "../api";
-import { modelOptionLabel, useModels } from "../useModels";
+import { ModelSelector } from "../components/ModelSelector";
+import { useProviderModels } from "../useModels";
+import { decodeModelSelection, encodeModelSelection } from "../components/ModelSelector";
 
 const defaultPromptA = "You are a concise support assistant. Explain the likely next step in no more than 100 words.";
 const defaultPromptB = "You are an empathetic support assistant. Acknowledge the concern, explain the likely next step, and offer a clear path to resolution.";
 const defaultEvaluatorPrompt = "You are an automated judge that evaluates assistant responses against the test case input and expected output. Return only a JSON object with overallScore, pass, summary, and criteriaResults.";
 
 export function RunEvaluationPage() {
-  const { models, defaultModel, checkedAt } = useModels();
+  const { options, loading: catalogLoading, checkedAt } = useProviderModels();
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const [dataset, setDataset] = useState<DatasetDetail | null>(null);
-  const [model, setModel] = useState<ModelId>(defaultModel);
+  const [modelSelectionValue, setModelSelectionValue] = useState("");
   const [promptA, setPromptA] = useState(defaultPromptA);
   const [promptB, setPromptB] = useState(defaultPromptB);
   const [useEvaluator, setUseEvaluator] = useState(false);
-  const [evaluatorModel, setEvaluatorModel] = useState<ModelId>(defaultModel);
+  const [evaluatorSelectionValue, setEvaluatorSelectionValue] = useState("");
+  const [selectionInitialized, setSelectionInitialized] = useState(false);
   const [evaluatorThreshold, setEvaluatorThreshold] = useState(70);
   const [evaluatorPrompt, setEvaluatorPrompt] = useState(defaultEvaluatorPrompt);
   const [isStarting, setIsStarting] = useState(false);
@@ -30,22 +33,41 @@ export function RunEvaluationPage() {
   }, [id]);
 
   useEffect(() => {
-    if (models.some((item) => item.id === model && item.health === "unavailable")) setModel(defaultModel);
-    if (models.some((item) => item.id === evaluatorModel && item.health === "unavailable")) setEvaluatorModel(defaultModel);
-  }, [models, defaultModel, model, evaluatorModel]);
+    if (!selectionInitialized && !catalogLoading && options.length) {
+      const first = options[0];
+      const encoded = encodeModelSelection({ modelId: first.modelId, provider: first.provider, source: first.source, ...(first.connectionId ? { connectionId: first.connectionId } : {}) });
+      setModelSelectionValue(encoded);
+      setEvaluatorSelectionValue(encoded);
+      setSelectionInitialized(true);
+      return;
+    }
+    if (selectionInitialized) {
+      const values = new Set(options.map((option) => encodeModelSelection({ modelId: option.modelId, provider: option.provider, source: option.source, ...(option.connectionId ? { connectionId: option.connectionId } : {}) })));
+      if (modelSelectionValue && !values.has(modelSelectionValue)) setModelSelectionValue("");
+      if (evaluatorSelectionValue && !values.has(evaluatorSelectionValue)) setEvaluatorSelectionValue("");
+    }
+  }, [options, catalogLoading, selectionInitialized, modelSelectionValue, evaluatorSelectionValue]);
 
   async function start(event: React.FormEvent) {
     event.preventDefault();
     if (!dataset) return;
+    const modelSelection = decodeModelSelection(modelSelectionValue);
+    const evaluatorSelection = useEvaluator ? decodeModelSelection(evaluatorSelectionValue) : null;
+    if (!modelSelection || (useEvaluator && !evaluatorSelection)) {
+      setError("Select an available model and provider connection.");
+      return;
+    }
     setIsStarting(true);
     setError(null);
     try {
       const run = await api.post<EvaluationRun>("/api/evaluations", {
         datasetId: dataset.id,
-        model,
+        model: modelSelection.modelId,
+        modelSelection,
         promptA,
         promptB,
-        evaluatorModel: useEvaluator ? evaluatorModel : undefined,
+        evaluatorModel: evaluatorSelection?.modelId,
+        evaluatorSelection: evaluatorSelection ?? undefined,
         evaluatorThreshold: useEvaluator ? evaluatorThreshold : undefined,
         evaluatorPrompt: useEvaluator ? evaluatorPrompt : undefined,
       });
@@ -75,11 +97,14 @@ export function RunEvaluationPage() {
           <label>Scenarios
             <input value={`${dataset.testCaseCount} scenario${dataset.testCaseCount === 1 ? "" : "s"}`} disabled />
           </label>
-          <label>Model
-            <select value={model} onChange={(event) => setModel(event.target.value as ModelId)}>
-              {models.map((item) => <option key={item.id} value={item.id} disabled={item.health === "unavailable"}>{modelOptionLabel(item)}</option>)}
-            </select>
-          </label>
+          <ModelSelector
+            label="Model"
+            value={modelSelectionValue}
+            onChange={setModelSelectionValue}
+            options={options}
+            loading={catalogLoading}
+            className="model-selector"
+          />
           <div className="radio-row">
             <label>
               <input type="radio" name="judge" checked={!useEvaluator} onChange={() => setUseEvaluator(false)} />
@@ -92,11 +117,14 @@ export function RunEvaluationPage() {
           </div>
           {useEvaluator && (
             <div className="panel judge-settings">
-              <label>Judge model
-                <select value={evaluatorModel} onChange={(event) => setEvaluatorModel(event.target.value as ModelId)}>
-                  {models.map((item) => <option key={item.id} value={item.id} disabled={item.health === "unavailable"}>{modelOptionLabel(item)}</option>)}
-                </select>
-              </label>
+              <ModelSelector
+                label="Judge model"
+                value={evaluatorSelectionValue}
+                onChange={setEvaluatorSelectionValue}
+                options={options}
+                loading={catalogLoading}
+                className="model-selector"
+              />
               <label>Pass threshold
                 <div className="threshold-row">
                   <input type="number" min={0} max={100} value={evaluatorThreshold} onChange={(event) => setEvaluatorThreshold(Math.max(0, Math.min(100, Number(event.target.value) || 0)))} />

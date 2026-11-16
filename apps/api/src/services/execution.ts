@@ -1,5 +1,4 @@
 import { estimateCost, getModelProvider, type ModelProvider } from "../provider.js";
-import type { ModelId } from "@prompt-playground/shared";
 
 let provider: ModelProvider | null = null;
 
@@ -16,7 +15,7 @@ export type ModelOutcome =
       inputTokens: number;
       outputTokens: number;
       totalTokens: number;
-      estimatedCostUsd: number;
+      estimatedCostUsd: number | null;
     }
   | {
       ok: false;
@@ -24,7 +23,13 @@ export type ModelOutcome =
       error: string;
     };
 
-export async function runModel(model: ModelId, prompt: string, input: string, providerOverride?: ModelProvider): Promise<ModelOutcome> {
+export async function runModel(
+  model: string,
+  prompt: string,
+  input: string,
+  providerOverride?: ModelProvider,
+  pricing?: { inputCostPerMillion: number | null; outputCostPerMillion: number | null },
+): Promise<ModelOutcome> {
   const provider = providerOverride ?? getProvider();
   const startedAt = performance.now();
   try {
@@ -37,7 +42,7 @@ export async function runModel(model: ModelId, prompt: string, input: string, pr
       inputTokens: result.inputTokens,
       outputTokens: result.outputTokens,
       totalTokens: result.inputTokens + result.outputTokens,
-      estimatedCostUsd: estimateCost(model, result.inputTokens, result.outputTokens),
+      estimatedCostUsd: estimateCost(model, result.inputTokens, result.outputTokens, pricing),
     };
   } catch (error) {
     return {

@@ -11,8 +11,11 @@ import { evaluationsRouter, activeRunIds } from "./routes/evaluations.js";
 import { modelsRouter } from "./routes/models.js";
 import { experimentsRouter } from "./routes/experiments.js";
 import { authRouter } from "./routes/auth.js";
+import { providersRouter } from "./routes/providers.js";
 import { adminRequired } from "./auth.js";
 import { FreeEvaluationLimitError } from "./services/usage.js";
+import { ModelSelectionError } from "./services/modelSelection.js";
+import { recoverStaleComparisons } from "./services/comparisonRuns.js";
 import { prisma } from "./prisma.js";
 
 export const currentDirectory = dirname(fileURLToPath(import.meta.url));
@@ -82,6 +85,7 @@ export function createApp() {
 
   app.use("/api", modelsRouter);
   app.use("/api", authRouter);
+  app.use("/api", providersRouter);
   app.use("/api", comparisonsRouter);
   app.use("/api", datasetsRouter);
   app.use("/api", evaluationsRouter);
@@ -91,6 +95,7 @@ export function createApp() {
   app.post("/api/admin/reconcile-runs", adminRequired, async (_req, res) => {
     try {
       await recoverStaleRuns();
+      await recoverStaleComparisons();
       return res.json({ ok: true });
     } catch (err) {
       console.error("Manual reconcile failed", err);
@@ -111,6 +116,7 @@ export function createApp() {
 
   app.use((error: unknown, _request: express.Request, response: express.Response, _next: express.NextFunction) => {
     if (error instanceof z.ZodError) return response.status(400).json({ error: "Invalid request", details: error.flatten() });
+    if (error instanceof ModelSelectionError) return response.status(400).json({ error: error.message });
     if (error instanceof FreeEvaluationLimitError) return response.status(429).json({ error: error.message, code: "FREE_EVALUATION_LIMIT_REACHED" });
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2025") {
       return response.status(404).json({ error: "Resource not found" });

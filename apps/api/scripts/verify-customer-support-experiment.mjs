@@ -119,8 +119,7 @@ const CANDIDATE_PROMPT = [
   "Keep the reply under 180 words and free of filler.",
 ].join("\n");
 
-const SUBJECT_MODEL = "nvidia/nemotron-3.5-lightning:free"; // same model for A and B, so the prompt is the only variable
-const JUDGE_MODEL = "nvidia/nemotron-3-super-120b-a12b:free"; // different, stronger model => no self-preference bias
+// Subject/judge models are resolved from the live Platform Free catalog below.
 
 console.log(`Target ${BASE} as ${prefix} (${username})\n`);
 
@@ -133,6 +132,16 @@ const datasets = await call("GET", "/api/datasets");
 const support = datasets.find((d) => d.name === "Customer Support");
 check("sample dataset found", Boolean(support), `${support?.testCaseCount} scenarios`);
 
+// Discover models from the live catalog: the static allowlist can lag behind
+// OpenRouter's free catalog and would create a configuration that cannot run.
+const catalog = await call("GET", "/api/model-catalog");
+const freeModels = (catalog?.platformFree ?? []).map((model) => model.modelId);
+check("platform free catalog available", freeModels.length > 0, `${freeModels.length} models`);
+const SUBJECT_MODEL = arg("subject-model", freeModels[0] ?? "");
+const JUDGE_MODEL = arg("judge-model", freeModels.find((id) => id !== SUBJECT_MODEL) ?? SUBJECT_MODEL);
+const selectionFor = (modelId) => ({ modelId, provider: "openrouter", source: "platform_free" });
+console.log(`subject model: ${SUBJECT_MODEL}\njudge model:   ${JUDGE_MODEL}\n`);
+
 let experiment;
 if (reuseId) {
   experiment = await call("GET", `/api/experiments/${reuseId}`);
@@ -144,9 +153,12 @@ if (reuseId) {
     datasetId: support.id,
     baselinePrompt: BASELINE_PROMPT,
     baselineModel: SUBJECT_MODEL,
+    baselineSelection: selectionFor(SUBJECT_MODEL),
     candidatePrompt: CANDIDATE_PROMPT,
     candidateModel: SUBJECT_MODEL,
+    candidateSelection: selectionFor(SUBJECT_MODEL),
     evaluatorModel: JUDGE_MODEL,
+    evaluatorSelection: selectionFor(JUDGE_MODEL),
     evaluatorThreshold: 70,
   });
   console.log(`\nexperiment id: ${experiment.id}`);

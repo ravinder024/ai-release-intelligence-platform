@@ -1,20 +1,23 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { supportedModels, type ExperimentDetail, type ModelId } from "@prompt-playground/shared";
+import { type ExperimentDetail } from "@prompt-playground/shared";
 import { createIteration, getExperiment } from "../api";
-import { modelOptionLabel, useModels } from "../useModels";
+import { ModelSelector } from "../components/ModelSelector";
+import { decodeModelSelection, encodeModelSelection } from "../components/ModelSelector";
+import { useProviderModels } from "../useModels";
 
 const defaultEvaluatorPrompt = "You are an automated judge that evaluates assistant responses against the test case input and expected output. Return only a JSON object with overallScore, pass, summary, and criteriaResults.";
 
 export function NewIterationPage() {
-  const { models, defaultModel } = useModels();
+  const { options, loading: catalogLoading } = useProviderModels();
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const [current, setCurrent] = useState<ExperimentDetail | null>(null);
   const [candidatePrompt, setCandidatePrompt] = useState("");
-  const [candidateModel, setCandidateModel] = useState<ModelId>(supportedModels[0].id);
+  const [candidateSelectionValue, setCandidateSelectionValue] = useState("");
   const [useEvaluator, setUseEvaluator] = useState(false);
-  const [evaluatorModel, setEvaluatorModel] = useState<ModelId>(supportedModels[0].id);
+  const [evaluatorSelectionValue, setEvaluatorSelectionValue] = useState("");
+  const [selectionInitialized, setSelectionInitialized] = useState(false);
   const [evaluatorThreshold, setEvaluatorThreshold] = useState(70);
   const [evaluatorPrompt, setEvaluatorPrompt] = useState(defaultEvaluatorPrompt);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -26,10 +29,10 @@ export function NewIterationPage() {
         setCurrent(experiment);
         // The previous candidate becomes the new baseline (immutable); candidate is editable.
         setCandidatePrompt(experiment.candidatePrompt);
-        setCandidateModel(experiment.candidateModel as ModelId);
+        if (experiment.modelConfigB) setCandidateSelectionValue(encodeModelSelection(experiment.modelConfigB));
         const hasEvaluator = Boolean(experiment.evaluatorModel);
         setUseEvaluator(hasEvaluator);
-        if (experiment.evaluatorModel) setEvaluatorModel(experiment.evaluatorModel as ModelId);
+        if (experiment.evaluatorConfig) setEvaluatorSelectionValue(encodeModelSelection(experiment.evaluatorConfig));
         if (experiment.evaluatorThreshold != null) setEvaluatorThreshold(experiment.evaluatorThreshold);
         if (experiment.evaluatorPrompt) setEvaluatorPrompt(experiment.evaluatorPrompt);
       })
@@ -37,32 +40,50 @@ export function NewIterationPage() {
   }, [id]);
 
   useEffect(() => {
-    if (models.some((item) => item.id === candidateModel && item.health === "unavailable")) setCandidateModel(defaultModel);
-    if (models.some((item) => item.id === evaluatorModel && item.health === "unavailable")) setEvaluatorModel(defaultModel);
-  }, [models, defaultModel, candidateModel, evaluatorModel]);
+    const values = options.map((option) => encodeModelSelection({ modelId: option.modelId, provider: option.provider, source: option.source, ...(option.connectionId ? { connectionId: option.connectionId } : {}) }));
+    if (!selectionInitialized && !catalogLoading && values.length) {
+      if (!candidateSelectionValue) setCandidateSelectionValue(values[0]);
+      if (!evaluatorSelectionValue) setEvaluatorSelectionValue(values[0]);
+      setSelectionInitialized(true);
+      return;
+    }
+    if (selectionInitialized) {
+      if (candidateSelectionValue && !values.includes(candidateSelectionValue)) setCandidateSelectionValue("");
+      if (evaluatorSelectionValue && !values.includes(evaluatorSelectionValue)) setEvaluatorSelectionValue("");
+    }
+  }, [options, catalogLoading, selectionInitialized, candidateSelectionValue, evaluatorSelectionValue]);
 
   if (error && !current) return <section className="intro"><p className="error">{error}</p><p><Link to="/experiments">Back to experiments</Link></p></section>;
   if (!current) return <section className="intro"><p>Loading…</p></section>;
 
   const nextIteration = current.iteration + 1;
   // Evaluator changed vs the previous iteration?
+  const currentEvaluatorSelection = current.evaluatorConfig ? encodeModelSelection(current.evaluatorConfig) : "";
   const evaluatorChanged =
-    (evaluatorModel ?? null) !== (current.evaluatorModel ?? null) ||
+    (useEvaluator ? evaluatorSelectionValue : "") !== currentEvaluatorSelection ||
     (useEvaluator ? evaluatorThreshold : null) !== current.evaluatorThreshold ||
     (useEvaluator ? evaluatorPrompt.trim() : null) !== (current.evaluatorPrompt ?? null);
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
     if (!current) return;
+    const candidateSelection = decodeModelSelection(candidateSelectionValue);
+    const evaluatorSelection = useEvaluator ? decodeModelSelection(evaluatorSelectionValue) : null;
+    if (!candidateSelection || (useEvaluator && !evaluatorSelection)) {
+      setError("Select an available model and provider connection.");
+      return;
+    }
     setIsSubmitting(true);
     setError(null);
     try {
       const next = await createIteration(current.id, {
         candidatePrompt,
-        candidateModel,
+        candidateModel: candidateSelection.modelId,
+        candidateSelection,
         ...(useEvaluator
           ? {
-              evaluatorModel,
+              evaluatorModel: evaluatorSelection!.modelId,
+              evaluatorSelection: evaluatorSelection!,
               evaluatorThreshold,
               evaluatorPrompt: evaluatorPrompt || undefined,
             }
@@ -107,11 +128,14 @@ export function NewIterationPage() {
           <label>Prompt
             <textarea value={candidatePrompt} onChange={(event) => setCandidatePrompt(event.target.value)} rows={9} />
           </label>
-          <label>Model
-            <select value={candidateModel} onChange={(event) => setCandidateModel(event.target.value as ModelId)}>
-              {models.map((item) => <option key={item.id} value={item.id} disabled={item.health === "unavailable"}>{modelOptionLabel(item)}</option>)}
-            </select>
-          </label>
+          <ModelSelector
+            label="Model"
+            value={candidateSelectionValue}
+            onChange={setCandidateSelectionValue}
+            options={options}
+            loading={catalogLoading}
+            className="model-selector"
+          />
         </section>
 
         <section className="panel judge-settings" style={{ gridColumn: "1 / -1" }}>
@@ -122,11 +146,14 @@ export function NewIterationPage() {
           </div>
           {useEvaluator && (
             <div className="judge-settings-inner">
-              <label>Judge model
-                <select value={evaluatorModel} onChange={(event) => setEvaluatorModel(event.target.value as ModelId)}>
-                  {models.map((item) => <option key={item.id} value={item.id} disabled={item.health === "unavailable"}>{modelOptionLabel(item)}</option>)}
-                </select>
-              </label>
+              <ModelSelector
+                label="Judge model"
+                value={evaluatorSelectionValue}
+                onChange={setEvaluatorSelectionValue}
+                options={options}
+                loading={catalogLoading}
+                className="model-selector"
+              />
               <label>Pass threshold
                 <div className="threshold-row">
                   <input type="number" min={0} max={100} value={evaluatorThreshold} onChange={(event) => setEvaluatorThreshold(Math.max(0, Math.min(100, Number(event.target.value) || 0)))} />

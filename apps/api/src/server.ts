@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { bootstrapAdmin } from "./adminBootstrap.js";
 import { bootstrapTester } from "./testerBootstrap.js";
 import { createApp, currentDirectory, recoverStaleRuns } from "./app.js";
+import { recoverStaleComparisons } from "./services/comparisonRuns.js";
 
 dotenv.config({ path: resolve(currentDirectory, "../.env") });
 dotenv.config({ path: resolve(currentDirectory, "../../../.env") });
@@ -40,7 +41,11 @@ const app = createApp();
 
 app.listen(port, () => {
   console.log(`Prompt Playground API listening on http://localhost:${port}`);
-  void recoverStaleRuns();
+  const reconcile = () => {
+    void recoverStaleRuns();
+    void recoverStaleComparisons();
+  };
+  reconcile();
   // Periodically reconcile runs that may be stuck (every 2 minutes)
-  setInterval(() => { void recoverStaleRuns(); }, 2 * 60 * 1000);
+  setInterval(reconcile, 2 * 60 * 1000);
 });

@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
-import { supportedModels, type Comparison, type CreateComparisonRequest, type ModelId, type PromptExecution } from "@prompt-playground/shared";
+import type { Comparison, CreateComparisonRequest, PromptExecution } from "@prompt-playground/shared";
 import { api } from "../api";
-import { modelOptionLabel, useModels } from "../useModels";
+import { decodeModelSelection, encodeModelSelection, ModelSelector } from "../components/ModelSelector";
+import { useProviderModels } from "../useModels";
 
 const initialRequest: CreateComparisonRequest = {
   model: "nvidia/nemotron-3.5-lightning:free",
@@ -10,23 +11,57 @@ const initialRequest: CreateComparisonRequest = {
   promptB: "You are an empathetic support assistant. Acknowledge the concern, explain the likely next step, and offer a clear path to resolution.",
 };
 
+const POLL_INTERVAL_MS = 2_000;
+
+function upsertHistory(current: Comparison[], next: Comparison): Comparison[] {
+  return [next, ...current.filter((item) => item.id !== next.id)].slice(0, 12);
+}
+
 export function PlaygroundPage() {
-  const { models, defaultModel, checkedAt } = useModels();
+  const { options, loading: catalogLoading, checkedAt } = useProviderModels();
   const [form, setForm] = useState(initialRequest);
   const [comparison, setComparison] = useState<Comparison | null>(null);
   const [history, setHistory] = useState<Comparison[]>([]);
-  const [isRunning, setIsRunning] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [actionBusy, setActionBusy] = useState<"stop" | "retry" | "discard" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [queryVolume, setQueryVolume] = useState(1_000);
   const [volumePeriod, setVolumePeriod] = useState<"day" | "week" | "month">("month");
+  const [modelSelectionValue, setModelSelectionValue] = useState("");
+  const [selectionInitialized, setSelectionInitialized] = useState(false);
+
+  const isRunning = comparison?.status === "running";
 
   useEffect(() => { void loadHistory(); }, []);
 
+  // Poll the open run until it reaches a terminal status (completed / partial_failure / interrupted).
   useEffect(() => {
-    if (models.some((item) => item.id === form.model && item.health === "unavailable")) {
-      setForm((current) => ({ ...current, model: defaultModel }));
+    const id = comparison?.id;
+    if (!id || comparison?.status !== "running") return;
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const fresh = await api.get<Comparison>(`/api/comparisons/${id}`);
+        if (cancelled) return;
+        setComparison(fresh);
+        setHistory((current) => upsertHistory(current, fresh));
+      } catch {
+        // A transient failure should not stop the poller; the sweep will close the run server-side.
+      }
+    };
+    const timer = setInterval(() => { void tick(); }, POLL_INTERVAL_MS);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, [comparison?.id, comparison?.status]);
+
+  useEffect(() => {
+    const values = options.map((option) => encodeModelSelection({ modelId: option.modelId, provider: option.provider, source: option.source, ...(option.connectionId ? { connectionId: option.connectionId } : {}) }));
+    if (!selectionInitialized && !catalogLoading && values.length) {
+      setModelSelectionValue(values[0]);
+      setSelectionInitialized(true);
+      return;
     }
-  }, [models, defaultModel, form.model]);
+    if (selectionInitialized && modelSelectionValue && !values.includes(modelSelectionValue)) setModelSelectionValue("");
+  }, [options, catalogLoading, selectionInitialized, modelSelectionValue]);
 
   async function loadHistory() {
     try {
@@ -42,16 +77,66 @@ export function PlaygroundPage() {
 
   async function runComparison(event: React.FormEvent) {
     event.preventDefault();
-    setIsRunning(true);
+    const modelSelection = decodeModelSelection(modelSelectionValue);
+    if (!modelSelection) {
+      setError("Select an available model and provider connection.");
+      return;
+    }
+    setIsSubmitting(true);
     setError(null);
     try {
-      const data = await api.post<Comparison>("/api/comparisons", form);
+      const data = await api.post<Comparison>("/api/comparisons", { ...form, model: modelSelection.modelId, modelSelection });
       setComparison(data);
-      setHistory((current) => [data, ...current.filter((item) => item.id !== data.id)].slice(0, 12));
+      setHistory((current) => upsertHistory(current, data));
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Could not run comparison");
     } finally {
-      setIsRunning(false);
+      setIsSubmitting(false);
+    }
+  }
+
+  async function stopRun(target: Comparison) {
+    setActionBusy("stop");
+    setError(null);
+    try {
+      const fresh = await api.post<Comparison>(`/api/comparisons/${target.id}/stop`, {});
+      setComparison((current) => (current?.id === fresh.id ? fresh : current));
+      setHistory((current) => upsertHistory(current, fresh));
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Could not stop this run");
+    } finally {
+      setActionBusy(null);
+    }
+  }
+
+  async function retryRun(target: Comparison) {
+    setActionBusy("retry");
+    setError(null);
+    try {
+      const fresh = await api.post<Comparison>(`/api/comparisons/${target.id}/retry`, {});
+      setComparison(fresh);
+      setHistory((current) => upsertHistory(current, fresh));
+      if (fresh.promptA) updateField("promptA", fresh.promptA);
+      if (fresh.promptB) updateField("promptB", fresh.promptB);
+      updateField("input", fresh.input);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Could not retry this run");
+    } finally {
+      setActionBusy(null);
+    }
+  }
+
+  async function discardRun(target: Comparison) {
+    setActionBusy("discard");
+    setError(null);
+    try {
+      await api.delete(`/api/comparisons/${target.id}`);
+      setHistory((current) => current.filter((item) => item.id !== target.id));
+      setComparison((current) => (current?.id === target.id ? null : current));
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Could not discard this run");
+    } finally {
+      setActionBusy(null);
     }
   }
 
@@ -65,16 +150,19 @@ export function PlaygroundPage() {
 
       <form onSubmit={runComparison} className="workspace">
         <section className="controls panel">
-          <label>Model
-            <select value={form.model} onChange={(event) => updateField("model", event.target.value as ModelId)}>
-              {models.map((model) => <option key={model.id} value={model.id} disabled={model.health === "unavailable"}>{modelOptionLabel(model)}</option>)}
-            </select>
-            <span className="hint">{checkedAt ? `Free-model health last checked ${new Date(checkedAt).toLocaleString()}.` : "Free-model health has not been checked yet."}</span>
-          </label>
+          <ModelSelector
+            label="Model"
+            value={modelSelectionValue}
+            onChange={setModelSelectionValue}
+            options={options}
+            loading={catalogLoading}
+            className="model-selector"
+          />
+          <span className="hint">{checkedAt ? `Free-model health last checked ${new Date(checkedAt).toLocaleString()}.` : "Free-model health has not been checked yet."}</span>
           <label>Shared input
             <textarea value={form.input} onChange={(event) => updateField("input", event.target.value)} rows={5} />
           </label>
-          <button type="submit" disabled={isRunning}>{isRunning ? "Running both prompts…" : "Run comparison"}</button>
+          <button type="submit" disabled={isSubmitting || isRunning}>{isRunning ? "Running both prompts…" : isSubmitting ? "Starting…" : "Run comparison"}</button>
           {error && <p className="error" role="alert">{error}</p>}
           <p className="hint">Every run is saved to the comparison history.</p>
           <fieldset className="scale-input">
@@ -97,8 +185,23 @@ export function PlaygroundPage() {
         </section>
       </form>
 
-      {comparison && <ComparisonView comparison={comparison} queryVolume={queryVolume} volumePeriod={volumePeriod} />}
-      <History history={history} onSelect={setComparison} />
+      {comparison && <ComparisonView
+        comparison={comparison}
+        queryVolume={queryVolume}
+        volumePeriod={volumePeriod}
+        actionBusy={actionBusy}
+        onStop={() => void stopRun(comparison)}
+        onRetry={() => void retryRun(comparison)}
+        onDiscard={() => void discardRun(comparison)}
+      />}
+      <History
+        history={history}
+        actionBusy={actionBusy}
+        onSelect={setComparison}
+        onStop={(item) => void stopRun(item)}
+        onRetry={(item) => void retryRun(item)}
+        onDiscard={(item) => void discardRun(item)}
+      />
     </section>
   );
 }
@@ -110,21 +213,55 @@ function PromptEditor({ title, value, onChange }: { title: string; value: string
   </section>;
 }
 
-function ComparisonView({ comparison, queryVolume, volumePeriod }: { comparison: Comparison; queryVolume: number; volumePeriod: "day" | "week" | "month" }) {
-  const executions = ["A", "B"].map((variant) => comparison.executions.find((execution) => execution.variant === variant)).filter(Boolean) as PromptExecution[];
+function ComparisonView({ comparison, queryVolume, volumePeriod, actionBusy, onStop, onRetry, onDiscard }: {
+  comparison: Comparison;
+  queryVolume: number;
+  volumePeriod: "day" | "week" | "month";
+  actionBusy: "stop" | "retry" | "discard" | null;
+  onStop: () => void;
+  onRetry: () => void;
+  onDiscard: () => void;
+}) {
+  const isRunning = comparison.status === "running";
+  const canAct = !isRunning && (comparison.status === "partial_failure" || comparison.status === "interrupted");
+  const executions = ["A", "B"].map((variant) => comparison.executions.find((execution) => execution.variant === variant));
   return <section className="result-section">
-    <div className="section-heading"><div><p className="eyebrow">LATEST RESULT</p><h2>Side-by-side output</h2></div><span className={`status ${comparison.status}`}>{comparison.status.replace("_", " ")}</span></div>
-    <div className="result-grid">{executions.map((execution) => <ResultCard key={execution.id} execution={execution} model={comparison.model} queryVolume={queryVolume} volumePeriod={volumePeriod} />)}</div>
+    <div className="section-heading">
+      <div><p className="eyebrow">LATEST RESULT</p><h2>Side-by-side output</h2></div>
+      <div className="run-controls">
+        <span className={`status ${comparison.status}`}>{comparison.status.replace("_", " ")}</span>
+        {isRunning && <button type="button" className="secondary" onClick={onStop} disabled={actionBusy !== null}>{actionBusy === "stop" ? "Stopping…" : "Stop run"}</button>}
+        {canAct && <button type="button" className="secondary" onClick={onRetry} disabled={actionBusy !== null}>{actionBusy === "retry" ? "Retrying…" : "Retry"}</button>}
+        {!isRunning && <button type="button" className="secondary danger-text" onClick={onDiscard} disabled={actionBusy !== null}>{actionBusy === "discard" ? "Discarding…" : "Discard"}</button>}
+      </div>
+    </div>
+    {isRunning && <p className="run-note">Both prompts are running. You can leave this page — the run keeps going and appears in the history below.</p>}
+    {comparison.status === "interrupted" && <p className="run-note run-note-warn">This run was interrupted — it was stopped, or the server restarted while it was running. Any response that finished is kept below; <strong>Retry</strong> runs both prompts again as a new comparison.</p>}
+    {comparison.status === "partial_failure" && <p className="run-note run-note-warn">One or both prompts failed. The error is shown on the card; <strong>Retry</strong> starts a fresh run with the same prompts.</p>}
+    <div className="result-grid">
+      {["A", "B"].map((variant, index) => {
+        const execution = executions[index];
+        if (!execution) {
+          return <article className="panel result-card pending-card" key={variant}>
+            <div className="panel-title">
+              <span>Prompt {variant}</span>
+              <span className={isRunning ? "status running" : "status interrupted"}>{isRunning ? "running" : comparison.status.replace("_", " ")}</span>
+            </div>
+            <p className="pending-note">{isRunning ? "Waiting for a response…" : "No response was recorded for this prompt."}</p>
+          </article>;
+        }
+        return <ResultCard key={execution.id} execution={execution} model={comparison.model} modelConfig={comparison.modelConfig ?? null} queryVolume={queryVolume} volumePeriod={volumePeriod} />;
+      })}
+    </div>
   </section>;
 }
 
-function ResultCard({ execution, model, queryVolume, volumePeriod }: { execution: PromptExecution; model: ModelId; queryVolume: number; volumePeriod: "day" | "week" | "month" }) {
-  const pricing = supportedModels.find((item) => item.id === model);
-  const isFreeModel = pricing !== undefined && pricing.inputCostPerMillion === 0 && pricing.outputCostPerMillion === 0;
-  const inputCost = pricing != null && execution.inputTokens != null ? execution.inputTokens / 1_000_000 * pricing.inputCostPerMillion : null;
-  const outputCost = pricing != null && execution.outputTokens != null ? execution.outputTokens / 1_000_000 * pricing.outputCostPerMillion : null;
+function ResultCard({ execution, model, modelConfig, queryVolume, volumePeriod }: { execution: PromptExecution; model: string; modelConfig: Comparison["modelConfig"]; queryVolume: number; volumePeriod: "day" | "week" | "month" }) {
+  const isFreeModel = modelConfig?.source === "platform_free" || (modelConfig?.inputCostPerMillion === 0 && modelConfig.outputCostPerMillion === 0);
+  const inputCost = modelConfig?.inputCostPerMillion != null && execution.inputTokens != null ? execution.inputTokens / 1_000_000 * modelConfig.inputCostPerMillion : null;
+  const outputCost = modelConfig?.outputCostPerMillion != null && execution.outputTokens != null ? execution.outputTokens / 1_000_000 * modelConfig.outputCostPerMillion : null;
   const totalCost = execution.estimatedCostUsd ?? (inputCost == null || outputCost == null ? null : inputCost + outputCost);
-  const modelLabel = pricing?.label ?? model;
+  const modelLabel = `${modelConfig?.provider ?? "Model"} · ${modelConfig?.keyLabel ?? ""} · ${model}`;
   const costCell = (value: number | null) => isFreeModel ? "Free" : value == null ? "—" : formatCost(value);
   return <article className="panel result-card">
     <div className="panel-title"><span>Prompt {execution.variant}</span><span className="model-name">{modelLabel}</span><span className={`status ${execution.status}`}>{execution.status}</span></div>
@@ -142,11 +279,32 @@ function ResultCard({ execution, model, queryVolume, volumePeriod }: { execution
   </article>;
 }
 
-function History({ history, onSelect }: { history: Comparison[]; onSelect: (comparison: Comparison) => void }) {
-  return <section className="history"><div className="section-heading"><div><p className="eyebrow">SAVED COMPARISONS</p><h2>Recent runs</h2></div></div>
-    {history.length === 0 ? <div className="empty">No comparisons yet. Your completed runs will appear here.</div> : <div className="history-list">{history.map((item) => <button className="history-item" key={item.id} type="button" onClick={() => onSelect(item)}>
-      <span>{new Date(item.createdAt).toLocaleString()}</span><span>{item.model}</span><span>{item.input}</span><span className={`status ${item.status}`}>{item.status.replace("_", " ")}</span>
-    </button>)}</div>}
+function History({ history, actionBusy, onSelect, onStop, onRetry, onDiscard }: {
+  history: Comparison[];
+  actionBusy: "stop" | "retry" | "discard" | null;
+  onSelect: (comparison: Comparison) => void;
+  onStop: (comparison: Comparison) => void;
+  onRetry: (comparison: Comparison) => void;
+  onDiscard: (comparison: Comparison) => void;
+}) {
+  return <section className="history run-history"><div className="section-heading"><div><p className="eyebrow">SAVED COMPARISONS</p><h2>Recent runs</h2></div></div>
+    {history.length === 0 ? <div className="empty">No comparisons yet. Your completed runs will appear here.</div> : <div className="history-list">{history.map((item) => {
+      const running = item.status === "running";
+      const retryable = item.status === "interrupted" || item.status === "partial_failure";
+      return <div className="history-item" key={item.id}>
+        <button type="button" className="history-open" onClick={() => onSelect(item)} title="Open this run">
+          <span>{new Date(item.createdAt).toLocaleString()}</span>
+          <span>{item.model}</span>
+          <span>{item.input}</span>
+        </button>
+        <span className={`status ${item.status}`}>{item.status.replace("_", " ")}</span>
+        <div className="history-actions">
+          {running && <button type="button" onClick={() => onStop(item)} disabled={actionBusy !== null}>Stop</button>}
+          {retryable && <button type="button" onClick={() => onRetry(item)} disabled={actionBusy !== null}>Retry</button>}
+          {!running && <button type="button" className="danger-text" onClick={() => onDiscard(item)} disabled={actionBusy !== null}>Discard</button>}
+        </div>
+      </div>;
+    })}</div>}
   </section>;
 }
 

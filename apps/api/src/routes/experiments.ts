@@ -2,8 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../prisma.js";
 import { executeRun, findRun, requestStop, type TestCase } from "./evaluations.js";
-import { getUserProvider, resolveUserProvider } from "../services/userProvider.js";
-import { attachReservationToRun, releasePlatformCredit } from "../services/usage.js";
+import { attachReservationToRun, releasePlatformCredit, reservePlatformCredit, reservePlatformCreditForRun } from "../services/usage.js";
 import { authRequired, optionalAuth } from "../auth.js";
 import {
   aggregateVariant,
@@ -14,21 +13,30 @@ import {
   recommendExperiment,
   type MetricResult,
 } from "../services/metrics.js";
-import { supportedModels, type CreateExperimentRequest, type Experiment, type ExperimentDetail, type ExperimentStatus, type ModelId } from "@prompt-playground/shared";
+import { type CreateExperimentRequest, type Experiment, type ExperimentDetail, type ExperimentStatus, type ModelSelection, type ModelSelectionSnapshot } from "@prompt-playground/shared";
+import { providerSnapshot, resolveLegacyModel, resolveModelSelection, resolveModelSnapshot, unownedLegacySnapshot } from "../services/modelSelection.js";
 
-const modelIds = supportedModels.map(({ id }) => id) as [ModelId, ...ModelId[]];
+const modelSelectionSchema = z.object({
+  modelId: z.string().trim().min(1).max(200),
+  provider: z.enum(["openai", "anthropic", "gemini", "deepseek", "openrouter"]),
+  source: z.enum(["platform_free", "byok"]),
+  connectionId: z.string().uuid().optional(),
+});
 
 const createExperimentSchema = z.object({
   name: z.string().trim().min(1, "Name is required").max(160),
   hypothesis: z.string().trim().max(2000).optional(),
   datasetId: z.string().uuid(),
   baselinePrompt: z.string().trim().min(1, "Baseline prompt is required").max(50_000),
-  baselineModel: z.enum(modelIds),
+  baselineModel: z.string().trim().min(1).max(200),
   candidatePrompt: z.string().trim().min(1, "Candidate prompt is required").max(50_000),
-  candidateModel: z.enum(modelIds),
-  evaluatorModel: z.enum(modelIds).optional(),
+  candidateModel: z.string().trim().min(1).max(200),
+  evaluatorModel: z.string().trim().min(1).max(200).optional(),
   evaluatorThreshold: z.number().int().min(0).max(100).optional(),
   evaluatorPrompt: z.string().trim().max(50_000).optional(),
+  baselineSelection: modelSelectionSchema.optional(),
+  candidateSelection: modelSelectionSchema.optional(),
+  evaluatorSelection: modelSelectionSchema.optional(),
 });
 
 const decisionSchema = z.object({
@@ -38,17 +46,28 @@ const decisionSchema = z.object({
 
 const iterationSchema = z.object({
   candidatePrompt: z.string().trim().min(1, "Candidate prompt is required").max(50_000),
-  candidateModel: z.enum(modelIds),
-  evaluatorModel: z.enum(modelIds).optional(),
+  candidateModel: z.string().trim().min(1).max(200),
+  evaluatorModel: z.string().trim().min(1).max(200).optional(),
+  candidateSelection: modelSelectionSchema.optional(),
+  evaluatorSelection: modelSelectionSchema.optional(),
   evaluatorThreshold: z.number().int().min(0).max(100).optional(),
   evaluatorPrompt: z.string().trim().max(50_000).optional(),
 });
 
 // Optional model overrides for retrying a run (e.g. switch to a working LLM when rate-limited).
 const retrySchema = z.object({
-  baselineModel: z.enum(modelIds).optional(),
-  candidateModel: z.enum(modelIds).optional(),
-  evaluatorModel: z.enum(modelIds).optional(),
+  baselineModel: z.string().trim().min(1).max(200).optional(),
+  candidateModel: z.string().trim().min(1).max(200).optional(),
+  evaluatorModel: z.string().trim().min(1).max(200).optional(),
+  baselineSelection: modelSelectionSchema.optional(),
+  candidateSelection: modelSelectionSchema.optional(),
+  evaluatorSelection: modelSelectionSchema.optional(),
+});
+
+const regressionCaseSchema = z.object({
+  testCaseId: z.string().uuid(),
+  variant: z.enum(["A", "B"]).default("B"),
+  datasetName: z.string().trim().min(1).max(160).optional(),
 });
 
 export const experimentsRouter = Router();
@@ -60,18 +79,34 @@ experimentsRouter.post("/experiments", authRequired, async (req, res, next) => {
     const dataset = await prisma.dataset.findUnique({ where: { id: payload.datasetId }, select: { id: true, name: true, isSample: true, userId: true } });
     if (!dataset) return res.status(404).json({ error: "Dataset not found" });
     if (!dataset.isSample && dataset.userId !== req.user!.id) return res.status(404).json({ error: "Dataset not found" });
+    const baseline = payload.baselineSelection
+      ? await resolveModelSelection(req.user!.id, payload.baselineSelection)
+      : await resolveLegacyModel(req.user!.id, payload.baselineModel);
+    const candidate = payload.candidateSelection
+      ? await resolveModelSelection(req.user!.id, payload.candidateSelection)
+      : await resolveLegacyModel(req.user!.id, payload.candidateModel);
+    const evaluator = payload.evaluatorModel
+      ? payload.evaluatorSelection
+        ? await resolveModelSelection(req.user!.id, payload.evaluatorSelection)
+        : await resolveLegacyModel(req.user!.id, payload.evaluatorModel)
+      : null;
+    if (payload.baselineSelection && baseline.snapshot.modelId !== payload.baselineModel) throw new Error("Baseline model selection does not match its model ID.");
+    if (payload.candidateSelection && candidate.snapshot.modelId !== payload.candidateModel) throw new Error("Candidate model selection does not match its model ID.");
     const experiment = await prisma.experiment.create({
       data: {
         name: payload.name,
         hypothesis: payload.hypothesis ?? null,
         datasetId: dataset.id,
         baselinePrompt: payload.baselinePrompt,
-        baselineModel: payload.baselineModel,
+        baselineModel: baseline.snapshot.modelId,
         candidatePrompt: payload.candidatePrompt,
-        candidateModel: payload.candidateModel,
-        evaluatorModel: payload.evaluatorModel ?? null,
+        candidateModel: candidate.snapshot.modelId,
+        evaluatorModel: evaluator?.snapshot.modelId ?? null,
         evaluatorThreshold: payload.evaluatorThreshold ?? null,
         evaluatorPrompt: payload.evaluatorPrompt ?? null,
+        modelConfigA: baseline.snapshot,
+        modelConfigB: candidate.snapshot,
+        evaluatorConfig: evaluator?.snapshot ?? undefined,
         userId: req.user!.id,
         status: "draft",
       },
@@ -176,12 +211,24 @@ experimentsRouter.patch("/experiments/:id/decision", authRequired, async (req, r
 experimentsRouter.post("/experiments/:id/run", authRequired, async (req, res, next) => {
   let reservationId: string | undefined;
   try {
-    const existing = await prisma.experiment.findUnique({ where: { id: req.params.id }, select: { userId: true } });
+    const existing = await prisma.experiment.findUnique({
+      where: { id: req.params.id },
+      select: { userId: true, baselineModel: true, candidateModel: true, evaluatorModel: true, modelConfigA: true, modelConfigB: true, evaluatorConfig: true },
+    });
     if (!existing) return res.status(404).json({ error: "Experiment not found" });
     if (existing.userId !== req.user!.id) return res.status(404).json({ error: "Experiment not found" });
-    const resolvedProvider = await resolveUserProvider(req.user!.id, "experiment");
-    reservationId = resolvedProvider.reservationId;
-    const result = await startExperimentRun(req.params.id, { provider: resolvedProvider.provider, reservationId: resolvedProvider.reservationId });
+    const resolved = await resolveExperimentProviders(req.user!.id, existing);
+    const usesPlatform = [resolved.a.snapshot, resolved.b.snapshot, ...(resolved.evaluator ? [resolved.evaluator.snapshot] : [])].some((snapshot) => snapshot.source === "platform_free");
+    reservationId = usesPlatform ? await reservePlatformCredit(req.user!.id, "experiment") : undefined;
+    const result = await startExperimentRun(req.params.id, {
+      providerA: resolved.a.provider,
+      providerB: resolved.b.provider,
+      evaluatorProvider: resolved.evaluator?.provider,
+      modelConfigA: resolved.a.snapshot,
+      modelConfigB: resolved.b.snapshot,
+      evaluatorConfig: resolved.evaluator?.snapshot ?? null,
+      reservationId,
+    });
     if (result === null) {
       if (reservationId) await releasePlatformCredit(reservationId);
       return res.status(404).json({ error: "Experiment not found" });
@@ -224,16 +271,36 @@ experimentsRouter.post("/experiments/:id/stop", authRequired, async (req, res, n
 experimentsRouter.post("/experiments/:id/resume", authRequired, async (req, res, next) => {
   try {
     const overrides = retrySchema.parse(req.body ?? {});
-    const existing = await prisma.experiment.findUnique({ where: { id: req.params.id }, select: { userId: true } });
+    const existing = await prisma.experiment.findUnique({
+      where: { id: req.params.id },
+      select: { userId: true, baselineModel: true, candidateModel: true, evaluatorModel: true, modelConfigA: true, modelConfigB: true, evaluatorConfig: true },
+    });
     if (!existing) return res.status(404).json({ error: "Experiment not found" });
     if (existing.userId !== req.user!.id) return res.status(404).json({ error: "Experiment not found" });
-    const provider = await getUserProvider(req.user!.id);
+    const resolved = await resolveExperimentProviders(req.user!.id, existing);
+    const a = overrides.baselineSelection
+      ? await resolveModelSelection(req.user!.id, overrides.baselineSelection)
+      : overrides.baselineModel ? await resolveModelSelection(req.user!.id, { ...resolved.a.snapshot, modelId: overrides.baselineModel }) : resolved.a;
+    const b = overrides.candidateSelection
+      ? await resolveModelSelection(req.user!.id, overrides.candidateSelection)
+      : overrides.candidateModel ? await resolveModelSelection(req.user!.id, { ...resolved.b.snapshot, modelId: overrides.candidateModel }) : resolved.b;
+    const evaluator = overrides.evaluatorSelection
+      ? await resolveModelSelection(req.user!.id, overrides.evaluatorSelection)
+      : overrides.evaluatorModel && resolved.evaluator
+      ? await resolveModelSelection(req.user!.id, { ...resolved.evaluator.snapshot, modelId: overrides.evaluatorModel })
+      : resolved.evaluator;
     const result = await retryExperimentFailures(req.params.id, {
-      provider,
+      providerA: a.provider,
+      providerB: b.provider,
+      evaluatorProvider: evaluator?.provider,
+      modelConfigA: a.snapshot,
+      modelConfigB: b.snapshot,
+      evaluatorConfig: evaluator?.snapshot ?? null,
+      userId: req.user!.id,
       models: {
-        ...(overrides.baselineModel ? { baselineModel: overrides.baselineModel } : {}),
-        ...(overrides.candidateModel ? { candidateModel: overrides.candidateModel } : {}),
-        ...(overrides.evaluatorModel ? { evaluatorModel: overrides.evaluatorModel } : {}),
+        baselineModel: a.snapshot.modelId,
+        candidateModel: b.snapshot.modelId,
+        ...(evaluator ? { evaluatorModel: evaluator.snapshot.modelId } : {}),
       },
     });
     if (result === null) return res.status(404).json({ error: "Experiment not found" });
@@ -249,16 +316,36 @@ experimentsRouter.post("/experiments/:id/resume", authRequired, async (req, res,
 experimentsRouter.post("/experiments/:id/retry", authRequired, async (req, res, next) => {
   try {
     const overrides = retrySchema.parse(req.body ?? {});
-    const existing = await prisma.experiment.findUnique({ where: { id: req.params.id }, select: { userId: true } });
+    const existing = await prisma.experiment.findUnique({
+      where: { id: req.params.id },
+      select: { userId: true, baselineModel: true, candidateModel: true, evaluatorModel: true, modelConfigA: true, modelConfigB: true, evaluatorConfig: true },
+    });
     if (!existing) return res.status(404).json({ error: "Experiment not found" });
     if (existing.userId !== req.user!.id) return res.status(404).json({ error: "Experiment not found" });
-    const provider = await getUserProvider(req.user!.id);
+    const resolved = await resolveExperimentProviders(req.user!.id, existing);
+    const a = overrides.baselineSelection
+      ? await resolveModelSelection(req.user!.id, overrides.baselineSelection)
+      : overrides.baselineModel ? await resolveModelSelection(req.user!.id, { ...resolved.a.snapshot, modelId: overrides.baselineModel }) : resolved.a;
+    const b = overrides.candidateSelection
+      ? await resolveModelSelection(req.user!.id, overrides.candidateSelection)
+      : overrides.candidateModel ? await resolveModelSelection(req.user!.id, { ...resolved.b.snapshot, modelId: overrides.candidateModel }) : resolved.b;
+    const evaluator = overrides.evaluatorSelection
+      ? await resolveModelSelection(req.user!.id, overrides.evaluatorSelection)
+      : overrides.evaluatorModel && resolved.evaluator
+      ? await resolveModelSelection(req.user!.id, { ...resolved.evaluator.snapshot, modelId: overrides.evaluatorModel })
+      : resolved.evaluator;
     const result = await retryExperimentFailures(req.params.id, {
-      provider,
+      providerA: a.provider,
+      providerB: b.provider,
+      evaluatorProvider: evaluator?.provider,
+      modelConfigA: a.snapshot,
+      modelConfigB: b.snapshot,
+      evaluatorConfig: evaluator?.snapshot ?? null,
+      userId: req.user!.id,
       models: {
-        ...(overrides.baselineModel ? { baselineModel: overrides.baselineModel } : {}),
-        ...(overrides.candidateModel ? { candidateModel: overrides.candidateModel } : {}),
-        ...(overrides.evaluatorModel ? { evaluatorModel: overrides.evaluatorModel } : {}),
+        baselineModel: a.snapshot.modelId,
+        candidateModel: b.snapshot.modelId,
+        ...(evaluator ? { evaluatorModel: evaluator.snapshot.modelId } : {}),
       },
     });
     if (result === null) return res.status(404).json({ error: "Experiment not found" });
@@ -283,13 +370,55 @@ experimentsRouter.post("/experiments/:id/iterations", authRequired, async (req, 
   }
 });
 
+experimentsRouter.post("/experiments/:id/regression-cases", authRequired, async (req, res, next) => {
+  try {
+    const payload = regressionCaseSchema.parse(req.body);
+    const experiment = await prisma.experiment.findUnique({ where: { id: req.params.id } });
+    if (!experiment || experiment.userId !== req.user!.id) return res.status(404).json({ error: "Experiment not found" });
+    const run = await prisma.evaluationRun.findFirst({ where: { experimentId: experiment.id }, orderBy: { createdAt: "desc" } });
+    if (!run) return res.status(404).json({ error: "Experiment has no evaluation results" });
+    const result = await prisma.evaluationResult.findFirst({
+      where: { runId: run.id, testCaseId: payload.testCaseId, variant: payload.variant },
+    });
+    if (!result || !result.inputSnapshot) return res.status(404).json({ error: "Scenario evidence not found" });
+    const criteria = Array.isArray(result.criteriaSnapshot) ? result.criteriaSnapshot.map(String) : [];
+    const requiresReview = !result.expectedOutputSnapshot?.trim() || criteria.length === 0;
+    const name = payload.datasetName ?? `${experiment.name} regression cases`.slice(0, 160);
+    const dataset = await prisma.dataset.create({
+      data: {
+        name,
+        description: `Regression case copied from experiment ${experiment.name}. The original dataset and evaluation history are unchanged.`,
+        useCase: "Regression analysis",
+        userId: req.user!.id,
+        testCases: {
+          create: {
+            input: result.inputSnapshot,
+            expectedOutput: result.expectedOutputSnapshot,
+            evaluationCriteria: criteria.length ? criteria : undefined,
+            notes: `Copied from ${payload.variant === "A" ? "baseline" : "candidate"} output in experiment ${experiment.name}.${requiresReview ? " Review the expected answer and rubric before relying on this case." : ""}`,
+            position: 0,
+            requiresReview,
+            sourceResultId: result.id,
+          },
+        },
+      },
+      include: { testCases: true },
+    });
+    return res.status(201).json({ datasetId: dataset.id, datasetName: dataset.name, testCaseId: dataset.testCases[0].id, requiresReview });
+  } catch (err) {
+    next(err);
+  }
+});
+
 /** Create the next iteration: baseline = previous candidate, same dataset, evaluator inherited unless overridden. */
 export async function createNextIteration(
   experimentId: string,
   payload: {
     candidatePrompt: string;
     candidateModel: string;
+    candidateSelection?: ModelSelection;
     evaluatorModel?: string;
+    evaluatorSelection?: ModelSelection;
     evaluatorThreshold?: number;
     evaluatorPrompt?: string;
   },
@@ -297,6 +426,23 @@ export async function createNextIteration(
 ) {
   const current = await prisma.experiment.findUnique({ where: { id: experimentId } });
   if (!current) return null;
+
+  const ownerId = userId ?? current.userId ?? null;
+  const snapshotFor = async (modelId: string) => (ownerId
+    ? (await resolveLegacyModel(ownerId, modelId)).snapshot
+    : unownedLegacySnapshot(modelId));
+  const baselineSnapshot = providerSnapshot(current.modelConfigB) ?? (await snapshotFor(current.candidateModel));
+  const candidate = payload.candidateSelection
+    ? { snapshot: (await resolveModelSelection(ownerId ?? "", payload.candidateSelection)).snapshot }
+    : { snapshot: await snapshotFor(payload.candidateModel) };
+  const currentEvaluatorSnapshot = providerSnapshot(current.evaluatorConfig);
+  const evaluator = payload.evaluatorModel
+    ? payload.evaluatorSelection
+      ? { snapshot: (await resolveModelSelection(ownerId ?? "", payload.evaluatorSelection)).snapshot }
+      : { snapshot: await snapshotFor(payload.evaluatorModel) }
+    : current.evaluatorModel
+      ? { snapshot: currentEvaluatorSnapshot ?? (await snapshotFor(current.evaluatorModel)) }
+      : null;
 
   const rootId = current.parentId ?? current.id;
   const members = await prisma.experiment.findMany({ where: { OR: [{ id: rootId }, { parentId: rootId }] }, select: { iteration: true } });
@@ -314,10 +460,13 @@ export async function createNextIteration(
       baselinePrompt: current.candidatePrompt,
       baselineModel: current.candidateModel,
       candidatePrompt: payload.candidatePrompt,
-      candidateModel: payload.candidateModel,
-      evaluatorModel: payload.evaluatorModel ?? current.evaluatorModel,
+      candidateModel: candidate.snapshot.modelId,
+      evaluatorModel: evaluator?.snapshot.modelId ?? null,
       evaluatorThreshold: payload.evaluatorThreshold ?? current.evaluatorThreshold,
       evaluatorPrompt: payload.evaluatorPrompt ?? current.evaluatorPrompt,
+      modelConfigA: baselineSnapshot,
+      modelConfigB: candidate.snapshot,
+      evaluatorConfig: evaluator?.snapshot ?? undefined,
       status: "draft",
     },
   });
@@ -333,8 +482,15 @@ export async function retryExperimentFailures(
   experimentId: string,
   opts?: {
     provider?: import("../provider.js").ModelProvider;
+    providerA?: import("../provider.js").ModelProvider;
+    providerB?: import("../provider.js").ModelProvider;
+    evaluatorProvider?: import("../provider.js").ModelProvider;
+    modelConfigA?: ModelSelectionSnapshot | null;
+    modelConfigB?: ModelSelectionSnapshot | null;
+    evaluatorConfig?: ModelSelectionSnapshot | null;
+    userId?: string;
     awaitRun?: boolean;
-    models?: { baselineModel?: ModelId; candidateModel?: ModelId; evaluatorModel?: ModelId };
+    models?: { baselineModel?: string; candidateModel?: string; evaluatorModel?: string };
   },
 ) {
   const experiment = await prisma.experiment.findUnique({
@@ -361,10 +517,13 @@ export async function retryExperimentFailures(
   }));
 
   // Use model overrides when provided (e.g. a working LLM), else the experiment's frozen config.
-  const baselineModel = opts?.models?.baselineModel ?? (experiment.baselineModel as ModelId);
-  const candidateModel = opts?.models?.candidateModel ?? (experiment.candidateModel as ModelId);
-  const evaluatorModel = opts?.models?.evaluatorModel ?? ((experiment.evaluatorModel as ModelId) ?? undefined);
+  const baselineModel = opts?.models?.baselineModel ?? experiment.baselineModel;
+  const candidateModel = opts?.models?.candidateModel ?? experiment.candidateModel;
+  const evaluatorModel = opts?.models?.evaluatorModel ?? (experiment.evaluatorModel ?? undefined);
   const judgeExpected = Boolean(evaluatorModel ?? latestRun.evaluatorModel);
+  const modelConfigA = opts?.modelConfigA ?? providerSnapshot(latestRun.modelConfigA);
+  const modelConfigB = opts?.modelConfigB ?? providerSnapshot(latestRun.modelConfigB);
+  const evaluatorConfig = opts?.evaluatorConfig ?? providerSnapshot(latestRun.evaluatorConfig);
 
   // Resumable = missing result, execution failure, evaluator failure, or a result that was never
   // judged (the jobs still in flight when a run was stopped). A successfully judged low score is a
@@ -382,7 +541,23 @@ export async function retryExperimentFailures(
 
   if (retryable.length === 0) return { retried: 0, remaining: 0 };
 
-  await prisma.evaluationRun.update({ where: { id: latestRun.id }, data: { status: "running" } });
+  const usesPlatform = [modelConfigA, modelConfigB, evaluatorConfig].some((snapshot) => snapshot?.source === "platform_free");
+  const reservationId = usesPlatform && opts?.userId
+    ? await reservePlatformCreditForRun(opts.userId, latestRun.id, "resume")
+    : undefined;
+
+  await prisma.evaluationRun.update({
+    where: { id: latestRun.id },
+    data: {
+      status: "running",
+      model: baselineModel,
+      modelA: baselineModel,
+      modelB: candidateModel,
+      ...(modelConfigA ? { modelConfigA } : {}),
+      ...(modelConfigB ? { modelConfigB } : {}),
+      ...(evaluatorConfig ? { evaluatorConfig } : {}),
+    },
+  });
   await prisma.experiment.update({ where: { id: experiment.id }, data: { status: "running" } });
 
   const runPromise = executeRun({
@@ -399,6 +574,13 @@ export async function retryExperimentFailures(
     evaluatorThreshold: experiment.evaluatorThreshold,
     evaluatorPrompt: experiment.evaluatorPrompt,
     provider: opts?.provider,
+    providerA: opts?.providerA,
+    providerB: opts?.providerB,
+    evaluatorProvider: opts?.evaluatorProvider,
+    modelConfigA,
+    modelConfigB,
+    evaluatorConfig,
+    reservationId,
   });
 
   if (opts?.awaitRun) await runPromise;
@@ -419,13 +601,48 @@ export async function retryExperimentFailures(
   return { retried: retryable.length, remaining };
 }
 
+async function resolveExperimentProviders(userId: string, experiment: {
+  baselineModel: string;
+  candidateModel: string;
+  evaluatorModel: string | null;
+  modelConfigA: unknown;
+  modelConfigB: unknown;
+  evaluatorConfig: unknown;
+}) {
+  const configA = providerSnapshot(experiment.modelConfigA);
+  const configB = providerSnapshot(experiment.modelConfigB);
+  const evaluatorConfig = providerSnapshot(experiment.evaluatorConfig);
+  const a = configA
+    ? { provider: await resolveModelSnapshot(userId, configA), snapshot: configA }
+    : await resolveLegacyModel(userId, experiment.baselineModel);
+  const b = configB
+    ? { provider: await resolveModelSnapshot(userId, configB), snapshot: configB }
+    : await resolveLegacyModel(userId, experiment.candidateModel);
+  const evaluator = experiment.evaluatorModel
+    ? evaluatorConfig
+      ? { provider: await resolveModelSnapshot(userId, evaluatorConfig), snapshot: evaluatorConfig }
+      : await resolveLegacyModel(userId, experiment.evaluatorModel)
+    : null;
+  return { a, b, evaluator };
+}
+
 /**
  * Start (or restart) an experiment run: baseline = variant A, candidate = variant B.
  * Reuses the Phase-3 evaluation engine via executeRun. Optionally awaits the run for tests.
  */
 export async function startExperimentRun(
   experimentId: string,
-  opts?: { provider?: import("../provider.js").ModelProvider; awaitRun?: boolean; reservationId?: string },
+  opts?: {
+    provider?: import("../provider.js").ModelProvider;
+    providerA?: import("../provider.js").ModelProvider;
+    providerB?: import("../provider.js").ModelProvider;
+    evaluatorProvider?: import("../provider.js").ModelProvider;
+    modelConfigA?: ModelSelectionSnapshot | null;
+    modelConfigB?: ModelSelectionSnapshot | null;
+    evaluatorConfig?: ModelSelectionSnapshot | null;
+    awaitRun?: boolean;
+    reservationId?: string;
+  },
 ) {
   const experiment = await prisma.experiment.findUnique({
     where: { id: experimentId },
@@ -455,6 +672,9 @@ export async function startExperimentRun(
       evaluatorModel: experiment.evaluatorModel,
       evaluatorThreshold: experiment.evaluatorThreshold,
       evaluatorPrompt: experiment.evaluatorPrompt,
+      modelConfigA: opts?.modelConfigA ?? experiment.modelConfigA ?? undefined,
+      modelConfigB: opts?.modelConfigB ?? experiment.modelConfigB ?? undefined,
+      evaluatorConfig: opts?.evaluatorConfig ?? experiment.evaluatorConfig ?? undefined,
       userId: experiment.userId,
       status: "running",
     },
@@ -465,16 +685,22 @@ export async function startExperimentRun(
 
   const runPromise = executeRun({
     runId: run.id,
-    model: experiment.baselineModel as ModelId,
-    modelA: experiment.baselineModel as ModelId,
-    modelB: experiment.candidateModel as ModelId,
+    model: experiment.baselineModel,
+    modelA: experiment.baselineModel,
+    modelB: experiment.candidateModel,
     testCases,
     promptA: experiment.baselinePrompt,
     promptB: experiment.candidatePrompt,
-    evaluatorModel: (experiment.evaluatorModel as ModelId) ?? undefined,
+    evaluatorModel: experiment.evaluatorModel ?? undefined,
     evaluatorThreshold: experiment.evaluatorThreshold,
     evaluatorPrompt: experiment.evaluatorPrompt,
     provider: opts?.provider,
+    providerA: opts?.providerA,
+    providerB: opts?.providerB,
+    evaluatorProvider: opts?.evaluatorProvider,
+    modelConfigA: opts?.modelConfigA ?? providerSnapshot(experiment.modelConfigA),
+    modelConfigB: opts?.modelConfigB ?? providerSnapshot(experiment.modelConfigB),
+    evaluatorConfig: opts?.evaluatorConfig ?? providerSnapshot(experiment.evaluatorConfig),
     reservationId: opts?.reservationId,
   });
 
@@ -496,6 +722,9 @@ function toExperiment(row: {
   evaluatorModel: string | null;
   evaluatorThreshold: number | null;
   evaluatorPrompt: string | null;
+  modelConfigA: unknown;
+  modelConfigB: unknown;
+  evaluatorConfig: unknown;
   status: string;
   decision: string | null;
   decisionNote: string | null;
@@ -518,6 +747,9 @@ function toExperiment(row: {
     evaluatorModel: row.evaluatorModel,
     evaluatorThreshold: row.evaluatorThreshold,
     evaluatorPrompt: row.evaluatorPrompt,
+    modelConfigA: providerSnapshot(row.modelConfigA),
+    modelConfigB: providerSnapshot(row.modelConfigB),
+    evaluatorConfig: providerSnapshot(row.evaluatorConfig),
     status: row.status as ExperimentStatus,
     decision: row.decision as Experiment["decision"],
     decisionNote: row.decisionNote,
@@ -537,10 +769,16 @@ function toMetricResults(rows: Array<{
   totalTokens: number | null;
   estimatedCostUsd: unknown;
   status: string;
+  errorMessage: string | null;
+  modelMetadata: unknown;
   judgement: {
     overallScore: number;
     pass: boolean;
     status: string;
+    summary: string | null;
+    evaluatorModel: string | null;
+    threshold: number | null;
+    errorMessage: string | null;
     criteriaResults: Array<{ criterion: string; score: number; pass: boolean; reason: string | null }>;
   } | null;
 }>): MetricResult[] {
@@ -552,11 +790,17 @@ function toMetricResults(rows: Array<{
     totalTokens: row.totalTokens,
     estimatedCostUsd: typeof row.estimatedCostUsd === "number" ? row.estimatedCostUsd : row.estimatedCostUsd ? Number(row.estimatedCostUsd) : null,
     status: row.status as "completed" | "failed",
+    errorMessage: row.errorMessage,
+    model: typeof (row.modelMetadata as { model?: unknown } | null)?.model === "string" ? (row.modelMetadata as { model: string }).model : null,
     judgement: row.judgement
       ? {
           overallScore: row.judgement.overallScore,
           pass: row.judgement.pass,
           status: row.judgement.status as "completed" | "failed",
+          summary: row.judgement.summary,
+          evaluatorModel: row.judgement.evaluatorModel,
+          threshold: row.judgement.threshold,
+          errorMessage: row.judgement.errorMessage,
           criteriaResults: row.judgement.criteriaResults.map((c) => ({
             criterion: c.criterion,
             score: c.score,
@@ -593,13 +837,13 @@ function summarizeRunMetrics(rows: Parameters<typeof toMetricResults>[0]) {
  * historical results keep showing the original input/golden even if the dataset changes later.
  */
 function buildScenarioTestCases(
-  results: Array<{ testCaseId: string; inputSnapshot: string | null; expectedOutputSnapshot: string | null }>,
-  liveTestCases: Array<{ id: string; input: string; expectedOutput: string | null }>,
+  results: Array<{ testCaseId: string; inputSnapshot: string | null; expectedOutputSnapshot: string | null; criteriaSnapshot: unknown }>,
+  liveTestCases: Array<{ id: string; input: string; expectedOutput: string | null; evaluationCriteria: unknown }>,
 ) {
   const liveById = new Map(liveTestCases.map((tc) => [tc.id, tc]));
   const ids = [...new Set(results.map((r) => r.testCaseId))];
   if (ids.length === 0) {
-    return liveTestCases.map((tc) => ({ id: tc.id, input: tc.input, expectedOutput: tc.expectedOutput }));
+    return liveTestCases.map((tc) => ({ id: tc.id, input: tc.input, expectedOutput: tc.expectedOutput, criteria: Array.isArray(tc.evaluationCriteria) ? tc.evaluationCriteria.map(String) : [] }));
   }
   return ids.map((id) => {
     const result = results.find((r) => r.testCaseId === id);
@@ -608,6 +852,9 @@ function buildScenarioTestCases(
       id,
       input: result?.inputSnapshot ?? live?.input ?? "",
       expectedOutput: result?.expectedOutputSnapshot ?? live?.expectedOutput ?? null,
+      criteria: Array.isArray(result?.criteriaSnapshot)
+        ? result.criteriaSnapshot.map(String)
+        : Array.isArray(live?.evaluationCriteria) ? live.evaluationCriteria.map(String) : [],
     };
   });
 }
@@ -644,7 +891,7 @@ export async function buildExperimentDetail(id: string): Promise<ExperimentDetai
         select: {
           name: true,
           _count: { select: { testCases: true } },
-          testCases: { orderBy: { position: "asc" }, select: { id: true, input: true, expectedOutput: true } },
+          testCases: { orderBy: { position: "asc" }, select: { id: true, input: true, expectedOutput: true, evaluationCriteria: true } },
         },
       },
       runs: {

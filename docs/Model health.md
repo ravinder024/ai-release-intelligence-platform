@@ -1,6 +1,11 @@
 # OpenRouter Free-Model Health
 
-The app keeps the supported `:free` model IDs as a server-side allowlist. A daily QA run tests only those IDs, writes a health report to `apps/api/model-health.json`, and `GET /api/models` serves the latest result to all model selectors.
+The app has two related but distinct model views:
+
+- `GET /api/models` serves health status for the curated `supportedModels` list. A QA run tests those IDs and writes `apps/api/model-health.json`.
+- Authenticated `GET /api/model-catalog` discovers the current OpenRouter models that have both prompt and completion pricing at zero, plus the models saved for each user's BYOK connection. This catalog is live; health status for one catalog model does not imply the user's OpenRouter account can execute it.
+
+The VPS QA cron runs every six hours. Windows Task Scheduler is configured separately and may use a daily schedule. Without the server-side `OPENROUTER_API_KEY`, Platform Free discovery and the QA job cannot run; BYOK discovery still uses each user's own key.
 
 Health behavior:
 

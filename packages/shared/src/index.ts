@@ -53,19 +53,62 @@ export const supportedModels = [
 
 export type ModelId = (typeof supportedModels)[number]["id"];
 
+export type ApiProvider = "openai" | "anthropic" | "gemini" | "deepseek" | "openrouter";
+export type ModelSource = "platform_free" | "byok";
+
+export type ModelSelection = {
+  modelId: string;
+  provider: ApiProvider;
+  source: ModelSource;
+  connectionId?: string;
+};
+
+export type ModelSelectionSnapshot = ModelSelection & {
+  keyLabel: string;
+  inputCostPerMillion: number | null;
+  outputCostPerMillion: number | null;
+  contextLength: number | null;
+};
+
+export type ProviderModelOption = {
+  modelId: string;
+  modelName: string;
+  provider: ApiProvider;
+  source: ModelSource;
+  connectionId?: string;
+  keyLabel: string;
+  inputCostPerMillion: number | null;
+  outputCostPerMillion: number | null;
+  contextLength: number | null;
+};
+
+export type ProviderConnectionSummary = {
+  id: string;
+  provider: ApiProvider;
+  label: string;
+  maskedKey: string;
+  modelCount: number;
+  catalogUpdatedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
 /** Runtime allowlist predicate for the application's free-only model policy. */
 export function isSupportedFreeModel(model: string): model is ModelId {
   return model.endsWith(":free") && supportedModels.some((item) => item.id === model);
 }
 
 export type ComparisonStatus = "running" | "completed" | "partial_failure";
+/** Playground comparisons additionally support an explicit interrupted state. */
+export type PlaygroundStatus = ComparisonStatus | "interrupted";
 export type ExecutionStatus = "completed" | "failed";
 
 export type CreateComparisonRequest = {
-  model: ModelId;
+  model: string;
   input: string;
   promptA: string;
   promptB: string;
+  modelSelection?: ModelSelection;
 };
 
 export type PromptExecution = {
@@ -84,9 +127,12 @@ export type PromptExecution = {
 
 export type Comparison = {
   id: string;
-  model: ModelId;
+  model: string;
+  modelConfig?: ModelSelectionSnapshot | null;
   input: string;
-  status: ComparisonStatus;
+  promptA?: string | null;
+  promptB?: string | null;
+  status: PlaygroundStatus;
   createdAt: string;
   completedAt: string | null;
   userId?: string | null;
@@ -114,6 +160,8 @@ export type DatasetTestCase = {
   evaluationCriteria: string[] | null;
   notes: string | null;
   position: number;
+  requiresReview?: boolean;
+  sourceResultId?: string | null;
 };
 
 export type CreateDatasetRequest = {
@@ -132,7 +180,7 @@ export type CreateTestCaseRequest = {
   position?: number;
 };
 
-export type UpdateTestCaseRequest = Partial<CreateTestCaseRequest>;
+export type UpdateTestCaseRequest = Partial<CreateTestCaseRequest> & { requiresReview?: boolean };
 
 export type DatasetDetail = Dataset & { testCases: DatasetTestCase[] };
 
@@ -181,15 +229,19 @@ export type EvaluationResult = {
 
 export type RunEvaluationRequest = {
   datasetId: string;
-  model: ModelId;
+  model: string;
   promptA: string;
   promptB: string;
   experimentId?: string;
-  modelA?: ModelId;
-  modelB?: ModelId;
-  evaluatorModel?: ModelId;
+  modelA?: string;
+  modelB?: string;
+  evaluatorModel?: string;
   evaluatorThreshold?: number;
   evaluatorPrompt?: string;
+  modelSelection?: ModelSelection;
+  modelASelection?: ModelSelection;
+  modelBSelection?: ModelSelection;
+  evaluatorSelection?: ModelSelection;
 };
 
 export type EvaluationRun = {
@@ -198,14 +250,17 @@ export type EvaluationRun = {
   datasetName: string;
   experimentId?: string | null;
   userId?: string | null;
-  model: ModelId;
-  modelA?: ModelId | null;
-  modelB?: ModelId | null;
+  model: string;
+  modelA?: string | null;
+  modelB?: string | null;
   promptA: string;
   promptB: string;
   evaluatorModel: string | null;
   evaluatorThreshold: number | null;
   evaluatorPrompt: string | null;
+  modelConfigA?: ModelSelectionSnapshot | null;
+  modelConfigB?: ModelSelectionSnapshot | null;
+  evaluatorConfig?: ModelSelectionSnapshot | null;
   status: ComparisonStatus;
   createdAt: string;
   completedAt: string | null;
@@ -218,7 +273,7 @@ export type EvaluationRunSummary = {
   id: string;
   datasetId: string;
   datasetName: string;
-  model: ModelId;
+  model: string;
   status: ComparisonStatus;
   createdAt: string;
   completedAt: string | null;
@@ -243,6 +298,9 @@ export type Experiment = {
   evaluatorModel: string | null;
   evaluatorThreshold: number | null;
   evaluatorPrompt: string | null;
+  modelConfigA?: ModelSelectionSnapshot | null;
+  modelConfigB?: ModelSelectionSnapshot | null;
+  evaluatorConfig?: ModelSelectionSnapshot | null;
   status: ExperimentStatus;
   decision: ExperimentDecision | null;
   decisionNote: string | null;
@@ -269,12 +327,15 @@ export type CreateExperimentRequest = {
   hypothesis?: string;
   datasetId: string;
   baselinePrompt: string;
-  baselineModel: ModelId;
+  baselineModel: string;
   candidatePrompt: string;
-  candidateModel: ModelId;
-  evaluatorModel?: ModelId;
+  candidateModel: string;
+  evaluatorModel?: string;
   evaluatorThreshold?: number;
   evaluatorPrompt?: string;
+  baselineSelection?: ModelSelection;
+  candidateSelection?: ModelSelection;
+  evaluatorSelection?: ModelSelection;
 };
 
 export type SaveExperimentDecisionRequest = {
@@ -312,6 +373,7 @@ export type ScenarioComparison = {
   testCaseId: string;
   input: string;
   expectedOutput: string | null;
+  criteria: string[];
   baselineScore: number | null;
   candidateScore: number | null;
   delta: number | null;
@@ -322,6 +384,20 @@ export type ScenarioComparison = {
   candidateOutput: string | null;
   baselineJudgement?: EvaluationJudgement | null;
   candidateJudgement?: EvaluationJudgement | null;
+  baselineExecution?: { status: ExecutionStatus; errorMessage: string | null; latencyMs: number | null; model: string | null } | null;
+  candidateExecution?: { status: ExecutionStatus; errorMessage: string | null; latencyMs: number | null; model: string | null } | null;
+  failureAnalysis?: FailureAnalysis | null;
+};
+
+export type FailureCategory = "unsupported_claim" | "missing_information" | "incorrect_next_step" | "instruction_violation" | "incomplete_response" | "criterion_failure" | "execution_error" | "evaluator_error" | "missing_result" | "unclassified";
+
+export type FailureAnalysis = {
+  type: "quality_failure" | "execution_error" | "evaluator_error" | "missing_result" | "regression" | "improvement" | "pass";
+  categories: FailureCategory[];
+  failedCriteria: Array<{ criterion: string; reason: string | null; score: number; pass: boolean }>;
+  evidence: string[];
+  suggestions: Array<{ action: string; rationale: string; testCaseId: string; criterion?: string }>;
+  requiresHumanReview: boolean;
 };
 
 export type Regression = {

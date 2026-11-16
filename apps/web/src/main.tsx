@@ -1,6 +1,7 @@
 import { createRoot } from "react-dom/client";
 import { BrowserRouter, NavLink, Navigate, Route, Routes, useNavigate } from "react-router-dom";
 import { AuthProvider, useAuth } from "./auth";
+import { HomePage } from "./pages/HomePage";
 import { PlaygroundPage } from "./pages/PlaygroundPage";
 import { DatasetsPage } from "./pages/DatasetsPage";
 import { DatasetDetailPage } from "./pages/DatasetDetailPage";
@@ -29,9 +30,13 @@ function Topbar() {
   const navigate = useNavigate();
   return (
     <header className="topbar">
-      <div className="brand"><span className="mark">P</span><span>Prompt Playground</span></div>
+      <NavLink to="/" className="brand" aria-label="AI-Evals Studio home">
+        <img className="brand-mark" src="/brand-mark.svg" alt="" />
+        <span>AI-Evals <strong>Studio</strong></span>
+      </NavLink>
       <nav className="nav">
-        <NavLink to="/" end className={({ isActive }) => (isActive ? "active" : "")}>Playground</NavLink>
+        <NavLink to="/" end className={({ isActive }) => (isActive ? "active" : "")}>Home</NavLink>
+        <NavLink to="/playground" className={({ isActive }) => (isActive ? "active" : "")}>Playground</NavLink>
         <NavLink to="/datasets" className={({ isActive }) => (isActive ? "active" : "")}>Datasets</NavLink>
         <NavLink to="/experiments" className={({ isActive }) => (isActive ? "active" : "")}>Experiments</NavLink>
         <NavLink to="/manual" className={({ isActive }) => (isActive ? "active" : "")}>Manual</NavLink>
@@ -64,7 +69,7 @@ function App() {
         <Route path="/datasets" element={<DatasetsPage />} />
         <Route path="/datasets/:id" element={<DatasetDetailPage />} />
         <Route path="/manual" element={<ManualPage />} />
-        <Route path="/" element={<RequireAuth><PlaygroundPage /></RequireAuth>} />
+        <Route path="/" element={<HomePage />} />
         <Route path="/playground" element={<RequireAuth><PlaygroundPage /></RequireAuth>} />
         <Route path="/datasets/:id/evaluate" element={<RequireAuth><RunEvaluationPage /></RequireAuth>} />
         <Route path="/evaluations/:id" element={<RequireAuth><EvaluationResultsPage /></RequireAuth>} />

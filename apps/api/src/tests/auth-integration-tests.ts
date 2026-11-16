@@ -145,19 +145,28 @@ async function main() {
     const anonEval = await request(base, { cookie: "" }, "/api/evaluations", "POST", { datasetId: datasetA.id, model: "nvidia/nemotron-3.5-lightning:free", promptA: "a", promptB: "b" });
     check("anonymous create run 401", anonEval.status, 401);
 
-    // -- BYOK metadata endpoint never exposes a raw key
-    const keyMetaEmpty = await request(base, sessionA, "/api/auth/key");
-    check("byok metadata unconfigured", (keyMetaEmpty.data as { configured?: boolean }).configured, false);
-    check("byok metadata hides key", (keyMetaEmpty.data as { maskedKey?: string | null }).maskedKey, null);
-    await prisma.user.update({
-      where: { id: (me.data as { id: string }).id },
-      data: { openRouterKeyEncrypted: "encrypted-placeholder", openRouterKeyLast4: "7abc", openRouterKeyUpdatedAt: new Date() },
+    // -- the retired single-key endpoint never exposes a raw key
+    const keyMetaRetired = await request(base, sessionA, "/api/auth/key");
+    check("legacy key endpoint retired", keyMetaRetired.status, 410);
+    check("legacy key endpoint returns no payload", JSON.stringify(keyMetaRetired.data).includes("encrypted-placeholder"), false);
+    const userId = (me.data as { id: string }).id;
+    const hasKeyBefore = (me.data as { hasKey?: boolean }).hasKey;
+    check("hasKey false without a connection", hasKeyBefore, false);
+    const probeConnection = await prisma.providerConnection.create({
+      data: {
+        userId,
+        provider: "openrouter",
+        label: "HasKey probe",
+        encryptedKey: "encrypted-placeholder",
+        keyLast4: "7abc",
+        modelCatalog: [],
+      },
     });
-    const keyMetaSet = await request(base, sessionA, "/api/auth/key");
-    const keyBody = keyMetaSet.data as { configured?: boolean; maskedKey?: string | null };
-    check("byok metadata configured", keyBody.configured, true);
-    check("byok metadata masked", keyBody.maskedKey, "sk-••••••••••7abc");
-    check("byok never returns raw key", JSON.stringify(keyBody).includes("encrypted-placeholder"), false);
+    const meWithConnection = await request(base, sessionA, "/api/auth/me");
+    check("hasKey true with a connection", (meWithConnection.data as { hasKey?: boolean }).hasKey, true);
+    await prisma.providerConnection.delete({ where: { id: probeConnection.id } });
+    const meWithoutConnection = await request(base, sessionA, "/api/auth/me");
+    check("hasKey false after removing the connection", (meWithoutConnection.data as { hasKey?: boolean }).hasKey, false);
 
     // -- usage endpoint is server-computed and safe
     const usageA = await request(base, sessionA, "/api/usage");

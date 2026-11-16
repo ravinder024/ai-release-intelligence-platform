@@ -32,6 +32,29 @@ Management thinking, not just software engineering.
   key (encrypted on their account) and gets a private workspace (own datasets,
   runs, experiments) alongside the shared read-only samples. In-app User Manual
   menu item + README. Deployed to Contabo under `ai-evals-studio.duckdns.org`.
+- **Phase 5A — Model Providers: COMPLETE.** Platform Free (dynamically discovered
+  from OpenRouter's free catalog, funded by the platform) plus multi-connection
+  BYOK across OpenAI, Anthropic, Google Gemini, DeepSeek, and OpenRouter. Labelled
+  connections (add / rename / replace / refresh / remove), per-connection model
+  discovery, a shared selector that keeps the same model under different keys as
+  separate entries, immutable provider/model snapshots on runs and experiments,
+  and server-side quota driven by the selected source. Summary:
+  `docs/implementation/model-providers.md`.
+- **Phase 5B — Failure Analysis: COMPLETE.** Deterministic classification layered
+  on existing judge results (quality failure vs regression vs execution error vs
+  evaluator error vs missing result), failure-pattern and criterion rollups,
+  evidence-backed corrective suggestions, and converting a failure into a
+  reviewable regression dataset. No second evaluator. Summary:
+  `docs/implementation/failure-analysis.md`.
+- **Phase 5C — Home page, readability, run controls: COMPLETE.** Public landing page
+  at `/` (three clickable workspace cards + About the builder); Playground moved to
+  `/playground`. `apps/web/src/styles.css` is now a **single light theme driven by
+  CSS tokens** (no dark surfaces, no literal colours outside `:root`). Settings is
+  rebuilt around **API keys** (per-key cards, per-row state, confirm-before-remove).
+  Playground runs are background + polled with **Stop / Retry / Discard** and an
+  explicit `interrupted` status; orphaned runs are swept on boot and every 2 minutes.
+  The legacy hidden `users.open_router_key_*` key is imported into a labelled
+  `Imported key` connection and the columns are dropped.
 - **Phases 6–7:** human review, analytics, deeper release intelligence. Not started.
 
 ## Phase 2 scope (agreed with the PM)
@@ -62,24 +85,50 @@ Management thinking, not just software engineering.
 
 - Monorepo: `apps/api` (Express + Prisma + PostgreSQL), `apps/web`
   (React + Vite), `packages/shared` (shared TypeScript contracts).
-- Models are called through **OpenRouter**, free models only (the list lives in `packages/shared/src/index.ts`; a healthy model is the default).
-- Provider adapter has retry-with-backoff for rate limits and friendly errors.
+- Two model sources feed one shared selector. **Platform Free** = OpenRouter models
+  discovered live where prompt *and* completion price are 0, billed to the platform
+  key. **BYOK** = per-user labelled `ProviderConnection` rows across OpenAI,
+  Anthropic, Google Gemini, DeepSeek, OpenRouter, each with its own discovered
+  catalog. Selector labels read `[Category] · [Provider] · [Key Label] · [Model]`;
+  the same model under two keys stays two entries.
+- Adapters live in `apps/api/src/providerRegistry.ts`; credential resolution lives in
+  `apps/api/src/services/modelSelection.ts` (removed connection/model => explicit
+  error, never a silent key switch). Snapshots store provider/source/label/model
+  only — never credentials.
+- Provider adapters have retry-with-backoff for rate limits and friendly errors.
 - **Auth (Phase 5):** username/password SSO with httpOnly cookie sessions
   (bcryptjs), in-app forgot-password reset codes (no email infra), per-user
-  OpenRouter keys encrypted at rest (AES-256-GCM via `ENCRYPTION_KEY`).
+  provider keys encrypted at rest (AES-256-GCM via `ENCRYPTION_KEY`).
   Multi-tenant: samples (`userId null`) shared/read-only; all user data is private.
   `npm run db:prune` wipes user data + non-sample datasets (deploy cleanup).
   Accounts are (re)created from `.env` on every server start: `ADMIN_USERNAME` /
   `ADMIN_PASSWORD` (emergency Admin, can sign in with username or email) and the
   optional demo `TESTER_USERNAME` / `TESTER_PASSWORD` (normal non-admin user,
   allowed to use local login in production).
+- **Platform Free quota:** standard users receive five completed evaluations;
+  Admin and the configured Tester are unlimited. Add existing usernames to
+  `FULL_ACCESS_USERNAMES` (comma-separated, case-insensitive) for additional
+  unlimited accounts. BYOK runs do not consume platform credits.
 - **Run controls:** `POST /api/experiments/:id/stop` (cooperative cancel, keeps
   finished work), `.../resume` (continues the same run: only missing/failed/unjudged
   evaluations), `.../run` (Restart = brand-new run). `.../retry` is the older alias
   for resume. End-to-end check: `node apps/api/scripts/verify-customer-support-experiment.mjs`.
+- **Playground run controls:** `POST /api/comparisons` returns immediately and the run
+  continues in `apps/api/src/services/comparisonRuns.ts` (in-process registry, execution
+  epoch, `PLAYGROUND_CALL_TIMEOUT_MS` per call, default 60s). `.../stop`, `DELETE
+  /api/comparisons/:id` (discard) and `.../retry` are owner-scoped. Orphaned `running`
+  rows are closed as `interrupted` by `recoverStaleComparisons()` on boot and in the
+  existing 2-minute sweep. `ComparisonStatus` (evaluation runs) is unchanged; comparisons
+  use their own `PlaygroundStatus` enum.
+- **Routes:** `/` is the public Home page; the Playground lives at `/playground` behind auth.
 - The API server serves the built web app on a single port (default `5101`);
   `GET /api/manual` serves the living User Manual (`docs/User manual.md`) for the
   in-app Manual page.
+- **Providers API:** `GET/POST /api/provider-connections`, `PATCH/DELETE /api/provider-connections/:id`,
+  `POST /api/provider-connections/:id/refresh`, `GET /api/model-catalog`. All owner-scoped.
+- **Regression cases:** `POST /api/experiments/:id/regression-cases` copies a failing scenario
+  into a new dataset (`requiresReview` when the golden/rubric is missing, `sourceResultId` for
+  provenance). The original dataset and history are never modified.
 
 ## How to run locally
 

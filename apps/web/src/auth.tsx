@@ -17,8 +17,6 @@ type AuthContextValue = {
   signup: (email: string, password: string, displayName: string) => Promise<void>;
   logout: () => Promise<void>;
   refresh: () => Promise<void>;
-  setKey: (openRouterApiKey: string) => Promise<void>;
-  removeKey: () => Promise<void>;
 };
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -57,18 +55,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(null);
   }
 
-  async function setKey(openRouterApiKey: string) {
-    await api.put<{ ok: boolean }>("/api/auth/key", { openRouterApiKey });
-    setUser((current) => (current ? { ...current, hasKey: true } : current));
-  }
-
-  async function removeKey() {
-    await api.delete<{ ok: boolean }>("/api/auth/key");
-    setUser((current) => (current ? { ...current, hasKey: false } : current));
-  }
-
   return (
-    <AuthContext.Provider value={{ user, loading, login, signup, logout, refresh, setKey, removeKey }}>
+    <AuthContext.Provider value={{ user, loading, login, signup, logout, refresh }}>
       {children}
     </AuthContext.Provider>
   );

@@ -13,6 +13,14 @@ enum ComparisonStatus {
   partial_failure
 }
 
+/// Playground-only lifecycle: a comparison can also be interrupted (stopped, or orphaned by a restart).
+enum PlaygroundStatus {
+  running
+  completed
+  partial_failure
+  interrupted
+}
+
 enum ExecutionStatus {
   completed
   failed
@@ -37,6 +45,14 @@ enum UserRole {
   admin
 }
 
+enum ApiProvider {
+  openai
+  anthropic
+  gemini
+  deepseek
+  openrouter
+}
+
 enum CreditReservationStatus {
   reserved
   consumed
@@ -49,9 +65,6 @@ model User {
   username               String?  @unique @db.VarChar(120)
   passwordHash           String?  @map("password_hash") @db.Text
   displayName            String   @map("display_name") @db.VarChar(120)
-  openRouterKeyEncrypted String?  @map("open_router_key_encrypted") @db.Text
-  openRouterKeyLast4     String?  @map("open_router_key_last4") @db.VarChar(8)
-  openRouterKeyUpdatedAt DateTime? @map("open_router_key_updated_at") @db.Timestamptz(6)
   role                   UserRole @default(user)
   emailVerified          Boolean  @default(false) @map("email_verified")
   lastLoginAt            DateTime? @map("last_login_at") @db.Timestamptz(6)
@@ -66,6 +79,7 @@ model User {
   evaluationRuns      EvaluationRun[]
   experiments         Experiment[]
   creditReservations  EvaluationCreditReservation[]
+  providerConnections ProviderConnection[]
 
   @@map("users")
 }
@@ -114,6 +128,23 @@ model PasswordResetToken {
   @@map("password_reset_tokens")
 }
 
+model ProviderConnection {
+  id               String      @id @default(uuid()) @db.Uuid
+  userId           String      @map("user_id") @db.Uuid
+  provider         ApiProvider
+  label            String      @db.VarChar(120)
+  encryptedKey     String      @map("encrypted_key") @db.Text
+  keyLast4         String      @map("key_last4") @db.VarChar(8)
+  modelCatalog     Json?       @map("model_catalog")
+  catalogUpdatedAt DateTime?   @map("catalog_updated_at") @db.Timestamptz(6)
+  createdAt        DateTime    @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime    @updatedAt @map("updated_at") @db.Timestamptz(6)
+  user             User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, provider])
+  @@map("provider_connections")
+}
+
 model EvaluationCreditReservation {
   id          String                   @id @default(uuid()) @db.Uuid
   userId      String                   @map("user_id") @db.Uuid
@@ -134,10 +165,13 @@ model PromptComparison {
   id          String           @id @default(uuid()) @db.Uuid
   model       String           @db.VarChar(160)
   input       String           @db.Text
-  status      ComparisonStatus @default(running)
+  promptA     String?          @map("prompt_a") @db.Text
+  promptB     String?          @map("prompt_b") @db.Text
+  status      PlaygroundStatus @default(running)
   createdAt   DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
   completedAt DateTime?        @map("completed_at") @db.Timestamptz(6)
   userId      String?          @map("user_id") @db.Uuid
+  modelConfig Json?            @map("model_config")
   user        User?            @relation(fields: [userId], references: [id], onDelete: Cascade)
   executions  PromptExecution[]
 
@@ -194,11 +228,15 @@ model DatasetTestCase {
   evaluationCriteria Json?              @map("evaluation_criteria")
   notes              String?            @db.Text
   position           Int                @default(0)
+  requiresReview     Boolean            @default(false) @map("requires_review")
+  sourceResultId     String?            @map("source_result_id") @db.Uuid
   createdAt          DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
   dataset            Dataset            @relation(fields: [datasetId], references: [id], onDelete: Cascade)
   results            EvaluationResult[]
+  sourceResult       EvaluationResult?  @relation("RegressionSource", fields: [sourceResultId], references: [id], onDelete: SetNull)
 
   @@index([datasetId, position])
+  @@index([sourceResultId])
   @@map("dataset_test_cases")
 }
 
@@ -213,6 +251,9 @@ model EvaluationRun {
   evaluatorModel     String?           @map("evaluator_model") @db.VarChar(160)
   evaluatorThreshold Int?              @map("evaluator_threshold")
   evaluatorPrompt    String?           @map("evaluator_prompt") @db.Text
+  modelConfigA       Json?             @map("model_config_a")
+  modelConfigB       Json?             @map("model_config_b")
+  evaluatorConfig    Json?             @map("evaluator_config")
   status             ComparisonStatus  @default(running)
   createdAt          DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
   completedAt        DateTime?         @map("completed_at") @db.Timestamptz(6)
@@ -256,6 +297,7 @@ model EvaluationResult {
   run               EvaluationRun    @relation(fields: [runId], references: [id], onDelete: Cascade)
   testCase          DatasetTestCase  @relation(fields: [testCaseId], references: [id], onDelete: Cascade)
   judgement         EvaluationJudgement?
+  regressionCases   DatasetTestCase[] @relation("RegressionSource")
 
   @@unique([runId, testCaseId, variant])
   @@index([runId])
@@ -295,6 +337,9 @@ model Experiment {
   evaluatorModel     String?            @map("evaluator_model") @db.VarChar(160)
   evaluatorThreshold Int?               @map("evaluator_threshold")
   evaluatorPrompt    String?            @map("evaluator_prompt") @db.Text
+  modelConfigA       Json?              @map("model_config_a")
+  modelConfigB       Json?              @map("model_config_b")
+  evaluatorConfig    Json?              @map("evaluator_config")
   status             ExperimentStatus   @default(draft)
   decision           ExperimentDecision?
   decisionNote       String?            @map("decision_note") @db.Text

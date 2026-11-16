@@ -3,26 +3,28 @@ import { z } from "zod";
 import { prisma } from "../prisma.js";
 import { runModel } from "../services/execution.js";
 import { judgeResult } from "../services/evaluator.js";
-import { resolveUserProvider } from "../services/userProvider.js";
-import { attachReservationToRun, settlePlatformCredit } from "../services/usage.js";
+import { attachReservationToRun, reservePlatformCredit, settlePlatformCredit } from "../services/usage.js";
 import { authRequired, optionalAuth } from "../auth.js";
-import { supportedModels, type EvaluationResult, type EvaluationRun, type EvaluationRunSummary, type ModelId } from "@prompt-playground/shared";
+import { type EvaluationResult, type EvaluationRun, type EvaluationRunSummary, type ModelId, type ModelSelectionSnapshot } from "@prompt-playground/shared";
 import type { ModelOutcome } from "../services/execution.js";
 import { rateLimit } from "../rateLimit.js";
-
-const modelIds = supportedModels.map(({ id }) => id) as [ModelId, ...ModelId[]];
+import { providerSnapshot, resolveLegacyModel, resolveModelSelection, resolveModelSnapshot } from "../services/modelSelection.js";
 
 const runEvaluationSchema = z.object({
   datasetId: z.string().uuid("Invalid dataset id"),
   experimentId: z.string().uuid().optional(),
-  model: z.enum(modelIds),
-  modelA: z.enum(modelIds).optional(),
-  modelB: z.enum(modelIds).optional(),
+  model: z.string().trim().min(1).max(200),
+  modelA: z.string().trim().min(1).max(200).optional(),
+  modelB: z.string().trim().min(1).max(200).optional(),
   promptA: z.string().trim().min(1, "Prompt A is required").max(50_000),
   promptB: z.string().trim().min(1, "Prompt B is required").max(50_000),
-  evaluatorModel: z.enum(modelIds).optional(),
+  evaluatorModel: z.string().trim().min(1).max(200).optional(),
   evaluatorThreshold: z.number().int().min(0).max(100).optional(),
   evaluatorPrompt: z.string().trim().max(50_000).optional(),
+  modelSelection: z.object({ modelId: z.string().min(1).max(200), provider: z.enum(["openai", "anthropic", "gemini", "deepseek", "openrouter"]), source: z.enum(["platform_free", "byok"]), connectionId: z.string().uuid().optional() }).optional(),
+  modelASelection: z.object({ modelId: z.string().min(1).max(200), provider: z.enum(["openai", "anthropic", "gemini", "deepseek", "openrouter"]), source: z.enum(["platform_free", "byok"]), connectionId: z.string().uuid().optional() }).optional(),
+  modelBSelection: z.object({ modelId: z.string().min(1).max(200), provider: z.enum(["openai", "anthropic", "gemini", "deepseek", "openrouter"]), source: z.enum(["platform_free", "byok"]), connectionId: z.string().uuid().optional() }).optional(),
+  evaluatorSelection: z.object({ modelId: z.string().min(1).max(200), provider: z.enum(["openai", "anthropic", "gemini", "deepseek", "openrouter"]), source: z.enum(["platform_free", "byok"]), connectionId: z.string().uuid().optional() }).optional(),
 });
 
 const CONCURRENCY = 3;
@@ -87,28 +89,38 @@ evaluationsRouter.post("/evaluations", authRequired, async (request, response, n
       return response.status(404).json({ error: "Dataset not found" });
     }
 
-    const resolvedProvider = await resolveUserProvider(request.user!.id, "evaluation");
-    reservationId = resolvedProvider.reservationId;
+    const selectionA = payload.modelASelection ?? payload.modelSelection;
+    const selectionB = payload.modelBSelection ?? payload.modelSelection;
+    const resolvedA = selectionA ? await resolveModelSelection(request.user!.id, selectionA) : await resolveLegacyModel(request.user!.id, payload.modelA ?? payload.model);
+    const resolvedB = selectionB ? await resolveModelSelection(request.user!.id, selectionB) : await resolveLegacyModel(request.user!.id, payload.modelB ?? payload.model);
+    const resolvedEvaluator = payload.evaluatorModel
+      ? payload.evaluatorSelection ? await resolveModelSelection(request.user!.id, payload.evaluatorSelection) : await resolveLegacyModel(request.user!.id, payload.evaluatorModel)
+      : null;
+    const usesPlatform = [resolvedA.snapshot, resolvedB.snapshot, ...(resolvedEvaluator ? [resolvedEvaluator.snapshot] : [])].some((snapshot) => snapshot.source === "platform_free");
+    if (usesPlatform) {
+      reservationId = await reservePlatformCredit(request.user!.id, "evaluation");
+    }
 
     const run = await prisma.evaluationRun.create({
       data: {
         datasetId: dataset.id,
         experimentId: payload.experimentId ?? null,
-        model: payload.model,
-        modelA: payload.modelA ?? null,
-        modelB: payload.modelB ?? null,
+        model: resolvedA.snapshot.modelId,
+        modelA: resolvedA.snapshot.modelId,
+        modelB: resolvedB.snapshot.modelId,
         promptA: payload.promptA,
         promptB: payload.promptB,
-        evaluatorModel: payload.evaluatorModel,
+        evaluatorModel: resolvedEvaluator?.snapshot.modelId ?? null,
         evaluatorThreshold: payload.evaluatorThreshold,
         evaluatorPrompt: payload.evaluatorPrompt,
+        modelConfigA: resolvedA.snapshot,
+        modelConfigB: resolvedB.snapshot,
+        evaluatorConfig: resolvedEvaluator?.snapshot ?? undefined,
         userId: request.user!.id,
         status: "running",
       },
     });
-    if (resolvedProvider.reservationId) {
-      await attachReservationToRun(resolvedProvider.reservationId, run.id);
-    }
+    if (reservationId) await attachReservationToRun(reservationId, run.id);
 
     // register cancellation flag for this run (cooperative cancellation)
     runCancellation.set(run.id, false);
@@ -126,17 +138,22 @@ evaluationsRouter.post("/evaluations", authRequired, async (request, response, n
 
     void executeRun({
       runId: run.id,
-      model: payload.model,
-      modelA: payload.modelA ?? null,
-      modelB: payload.modelB ?? null,
+      model: resolvedA.snapshot.modelId,
+      modelA: resolvedA.snapshot.modelId,
+      modelB: resolvedB.snapshot.modelId,
       testCases,
       promptA: payload.promptA,
       promptB: payload.promptB,
-      evaluatorModel: payload.evaluatorModel,
+      evaluatorModel: resolvedEvaluator?.snapshot.modelId,
       evaluatorThreshold: payload.evaluatorThreshold ?? null,
       evaluatorPrompt: payload.evaluatorPrompt ?? null,
-      provider: resolvedProvider.provider,
-      reservationId: resolvedProvider.reservationId,
+      providerA: resolvedA.provider,
+      providerB: resolvedB.provider,
+      evaluatorProvider: resolvedEvaluator?.provider,
+      modelConfigA: resolvedA.snapshot,
+      modelConfigB: resolvedB.snapshot,
+      evaluatorConfig: resolvedEvaluator?.snapshot ?? null,
+      reservationId,
     });
 
     return response.status(201).json(await findRun(run.id));
@@ -202,7 +219,22 @@ evaluationsRouter.post("/evaluations/:id/restart", authRequired, async (request,
     if (!dataset) return response.status(404).json({ error: "Dataset not found" });
     if (!dataset.isSample && dataset.userId !== request.user!.id) return response.status(404).json({ error: "Dataset not found" });
 
-    const resolvedProvider = await resolveUserProvider(request.user!.id, "restart");
+    const oldConfigA = providerSnapshot(existing.modelConfigA);
+    const oldConfigB = providerSnapshot(existing.modelConfigB);
+    const oldEvaluatorConfig = providerSnapshot(existing.evaluatorConfig);
+    const resolvedA = oldConfigA
+      ? { provider: await resolveModelSnapshot(request.user!.id, oldConfigA), snapshot: oldConfigA }
+      : await resolveLegacyModel(request.user!.id, existing.modelA ?? existing.model);
+    const resolvedB = oldConfigB
+      ? { provider: await resolveModelSnapshot(request.user!.id, oldConfigB), snapshot: oldConfigB }
+      : await resolveLegacyModel(request.user!.id, existing.modelB ?? existing.model);
+    const resolvedEvaluator = existing.evaluatorModel
+      ? oldEvaluatorConfig
+        ? { provider: await resolveModelSnapshot(request.user!.id, oldEvaluatorConfig), snapshot: oldEvaluatorConfig }
+        : await resolveLegacyModel(request.user!.id, existing.evaluatorModel)
+      : null;
+    const usesPlatform = [resolvedA.snapshot, resolvedB.snapshot, ...(resolvedEvaluator ? [resolvedEvaluator.snapshot] : [])].some((snapshot) => snapshot.source === "platform_free");
+    const reservationId = usesPlatform ? await reservePlatformCredit(request.user!.id, "restart") : undefined;
 
     const newRun = await prisma.evaluationRun.create({
       data: {
@@ -216,11 +248,14 @@ evaluationsRouter.post("/evaluations/:id/restart", authRequired, async (request,
         evaluatorModel: existing.evaluatorModel,
         evaluatorThreshold: existing.evaluatorThreshold,
         evaluatorPrompt: existing.evaluatorPrompt,
+        modelConfigA: resolvedA.snapshot,
+        modelConfigB: resolvedB.snapshot,
+        evaluatorConfig: resolvedEvaluator?.snapshot ?? undefined,
         userId: request.user!.id,
         status: "running",
       },
     });
-    if (resolvedProvider.reservationId) await attachReservationToRun(resolvedProvider.reservationId, newRun.id);
+    if (reservationId) await attachReservationToRun(reservationId, newRun.id);
 
     const testCases = dataset.testCases.map((testCase) => ({
       id: testCase.id,
@@ -241,17 +276,22 @@ evaluationsRouter.post("/evaluations/:id/restart", authRequired, async (request,
 
     void executeRun({
       runId: newRun.id,
-      model: existing.model as ModelId,
-      modelA: existing.modelA as ModelId | null,
-      modelB: existing.modelB as ModelId | null,
+      model: resolvedA.snapshot.modelId,
+      modelA: resolvedA.snapshot.modelId,
+      modelB: resolvedB.snapshot.modelId,
       testCases,
       promptA: existing.promptA,
       promptB: existing.promptB,
-      evaluatorModel: (existing.evaluatorModel as unknown as ModelId) ?? undefined,
+      evaluatorModel: resolvedEvaluator?.snapshot.modelId,
       evaluatorThreshold: existing.evaluatorThreshold ?? null,
       evaluatorPrompt: existing.evaluatorPrompt ?? null,
-      provider: resolvedProvider.provider,
-      reservationId: resolvedProvider.reservationId,
+      providerA: resolvedA.provider,
+      providerB: resolvedB.provider,
+      evaluatorProvider: resolvedEvaluator?.provider,
+      modelConfigA: resolvedA.snapshot,
+      modelConfigB: resolvedB.snapshot,
+      evaluatorConfig: resolvedEvaluator?.snapshot ?? null,
+      reservationId,
     });
 
     return response.status(201).json(await findRun(newRun.id));
@@ -271,9 +311,9 @@ export type TestCase = {
 
 export type ExecuteRunOptions = {
   runId: string;
-  model: ModelId;
-  modelA?: ModelId | null;
-  modelB?: ModelId | null;
+  model: string;
+  modelA?: string | null;
+  modelB?: string | null;
   testCases: TestCase[];
   /** Run only these specific (testCase, variant) jobs instead of all test cases. */
   jobs?: Array<{ testCase: TestCase; variant: "A" | "B" }>;
@@ -281,11 +321,17 @@ export type ExecuteRunOptions = {
   upsert?: boolean;
   promptA: string;
   promptB: string;
-  evaluatorModel?: ModelId | null;
+  evaluatorModel?: string | null;
   evaluatorThreshold?: number | null;
   evaluatorPrompt?: string | null;
   /** Optional provider override (used by deterministic tests). */
   provider?: import("../provider.js").ModelProvider;
+  providerA?: import("../provider.js").ModelProvider;
+  providerB?: import("../provider.js").ModelProvider;
+  evaluatorProvider?: import("../provider.js").ModelProvider;
+  modelConfigA?: ModelSelectionSnapshot | null;
+  modelConfigB?: ModelSelectionSnapshot | null;
+  evaluatorConfig?: ModelSelectionSnapshot | null;
   reservationId?: string;
 };
 
@@ -303,6 +349,12 @@ export async function executeRun({
   evaluatorThreshold = null,
   evaluatorPrompt = null,
   provider,
+  providerA,
+  providerB,
+  evaluatorProvider,
+  modelConfigA,
+  modelConfigB,
+  evaluatorConfig,
   reservationId,
 }: ExecuteRunOptions) {
   // ensure cancellation flag exists for this run, and claim ownership of its status
@@ -323,7 +375,9 @@ export async function executeRun({
       if (runCancellation.get(runId)) return;
       try {
         const prompt = job.variant === "A" ? promptA : promptB;
-        const variantModel = (job.variant === "A" ? modelA ?? model : modelB ?? model) as ModelId;
+        const variantModel = job.variant === "A" ? modelA ?? model : modelB ?? model;
+        const variantConfig = job.variant === "A" ? modelConfigA : modelConfigB;
+        const variantProvider = job.variant === "A" ? providerA ?? provider : providerB ?? provider;
 
         // attempt the model call with retries and per-call timeout
         let outcome: ModelOutcome | null = null;
@@ -333,7 +387,10 @@ export async function executeRun({
           const start = performance.now();
           try {
             const race = await Promise.race([
-              runModel(variantModel, prompt, job.testCase.input, provider),
+              runModel(variantModel, prompt, job.testCase.input, variantProvider, variantConfig ? {
+                inputCostPerMillion: variantConfig.inputCostPerMillion,
+                outputCostPerMillion: variantConfig.outputCostPerMillion,
+              } : undefined),
               new Promise<{ ok: false; latencyMs: number; error: string }>((resolve) =>
                 setTimeout(() => resolve({ ok: false, latencyMs: Math.round(performance.now() - start), error: "timeout" }), PER_TEST_TIMEOUT_MS),
               ),
@@ -359,7 +416,7 @@ export async function executeRun({
           prompt,
           output: outcome.ok ? outcome.output : null,
           responseSnapshot: outcome.ok ? { output: outcome.output } : undefined,
-          modelMetadata: { model: variantModel },
+          modelMetadata: { model: variantModel, ...(variantConfig ?? {}) },
           inputSnapshot: job.testCase.input,
           expectedOutputSnapshot: job.testCase.expectedOutput,
           criteriaSnapshot: job.testCase.evaluationCriteria ?? undefined,
@@ -404,11 +461,11 @@ export async function executeRun({
             expectedOutput: job.testCase.expectedOutput,
             criteria: job.testCase.evaluationCriteria ?? ["Overall response quality"],
             threshold: evaluatorThreshold,
-            ...(provider
+            ...((evaluatorProvider ?? provider)
               ? {
                   provider: {
                     execute: async (opts: { model: string; prompt: string; input: string }) => {
-                      const modelResult = await provider.execute({ model: opts.model as ModelId, prompt: opts.prompt, input: opts.input });
+                      const modelResult = await (evaluatorProvider ?? provider)!.execute({ model: opts.model, prompt: opts.prompt, input: opts.input });
                       return { output: modelResult.output };
                     },
                   },
@@ -450,14 +507,13 @@ export async function executeRun({
     console.error(`Evaluation run ${runId} crashed:`, error);
   } finally {
     const cancelled = runCancellation.get(runId) === true;
+    const finalStatus = anyFailed || cancelled ? "partial_failure" : "completed";
     // The credit belongs to this execution, so it always settles, even if a resume took over.
     if (reservationId) {
-      const completedWork = await prisma.evaluationResult.count({ where: { runId, status: "completed" } }) > 0;
-      await settlePlatformCredit(reservationId, completedWork).catch((error) => console.error("Could not settle evaluation credit:", error));
+      await settlePlatformCredit(reservationId, finalStatus === "completed").catch((error) => console.error("Could not settle evaluation credit:", error));
     }
     // A newer execution (a resume after a stop) owns this run now — do not clobber its status.
     if (runExecutionEpoch.get(runId) === epoch) {
-      const finalStatus = anyFailed || cancelled ? "partial_failure" : "completed";
       await prisma.evaluationRun.update({
         where: { id: runId },
         data: { status: finalStatus, completedAt: new Date() },
@@ -545,6 +601,9 @@ export async function findRun(id: string): Promise<EvaluationRun | null> {
     evaluatorModel: run.evaluatorModel ?? null,
     evaluatorThreshold: run.evaluatorThreshold ?? null,
     evaluatorPrompt: run.evaluatorPrompt ?? null,
+    modelConfigA: providerSnapshot(run.modelConfigA),
+    modelConfigB: providerSnapshot(run.modelConfigB),
+    evaluatorConfig: providerSnapshot(run.evaluatorConfig),
     status: run.status,
     createdAt: run.createdAt.toISOString(),
     completedAt: run.completedAt?.toISOString() ?? null,

@@ -29,7 +29,7 @@ export function LoginPage() {
       <div className="panel auth-card">
         <p className="eyebrow">WELCOME BACK</p>
         <h1>Sign in</h1>
-        <p className="muted">Use your own account and OpenRouter key to run evaluations.</p>
+        <p className="muted">Use your own account. Platform free models are included; connect your own provider keys for BYOK.</p>
         <button className="google-button" type="button" onClick={() => { window.location.href = "/api/auth/google"; }}>
           Continue with Google
         </button>

@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { metricDeltaTone, type ExperimentDecision, type ExperimentDetail, type MetricKind, type ModelId, type ScenarioComparison } from "@prompt-playground/shared";
+import { metricDeltaTone, type ExperimentDecision, type ExperimentDetail, type MetricKind, type ScenarioComparison } from "@prompt-playground/shared";
+import { api } from "../api";
 import { getExperiment, resumeExperiment, runExperiment, saveExperimentDecision, stopExperiment } from "../api";
 import { CriterionName } from "../components/CriterionName";
-import { modelOptionLabel, useModels } from "../useModels";
+import { useProviderModels } from "../useModels";
+import { decodeModelSelection, encodeModelSelection, ModelSelector } from "../components/ModelSelector";
 
 const decisionLabel: Record<ExperimentDecision, string> = {
   promote_candidate: "Promote Candidate",
@@ -12,7 +14,7 @@ const decisionLabel: Record<ExperimentDecision, string> = {
 };
 
 export function ExperimentDetailPage() {
-  const { models } = useModels();
+  const { options, loading: catalogLoading } = useProviderModels();
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const [experiment, setExperiment] = useState<ExperimentDetail | null>(null);
@@ -23,7 +25,9 @@ export function ExperimentDetailPage() {
   const [isBusy, setIsBusy] = useState(false);
   const [expandedScenarios, setExpandedScenarios] = useState<Set<string>>(new Set());
   const [showPrompts, setShowPrompts] = useState(false);
-  const [retryModels, setRetryModels] = useState<{ id?: string; baselineModel?: ModelId; candidateModel?: ModelId; evaluatorModel?: ModelId }>({});
+  const [creatingRegressionId, setCreatingRegressionId] = useState<string | null>(null);
+  const [regressionCase, setRegressionCase] = useState<{ datasetId: string; datasetName: string; requiresReview: boolean } | null>(null);
+  const [retryModels, setRetryModels] = useState<{ id?: string; baseline?: string; candidate?: string; evaluator?: string }>({});
 
   const load = useCallback(async () => {
     try {
@@ -32,13 +36,13 @@ export function ExperimentDetailPage() {
       setDecision(data.decision);
       setDecisionNote(data.decisionNote ?? "");
       // Default the retry model overrides to the frozen config (preserve user picks, reset per experiment).
-      setRetryModels((current) => (current.baselineModel && current.id === data.id
+      setRetryModels((current) => (current.baseline && current.id === data.id
         ? current
         : {
             id: data.id,
-            baselineModel: data.baselineModel as ModelId,
-            candidateModel: data.candidateModel as ModelId,
-            ...(data.evaluatorModel ? { evaluatorModel: data.evaluatorModel as ModelId } : {}),
+        baseline: data.modelConfigA ? encodeModelSelection(data.modelConfigA) : "",
+        candidate: data.modelConfigB ? encodeModelSelection(data.modelConfigB) : "",
+        evaluator: data.evaluatorConfig ? encodeModelSelection(data.evaluatorConfig) : "",
           }));
       return data;
     } catch (caught) {
@@ -50,6 +54,17 @@ export function ExperimentDetailPage() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  useEffect(() => {
+    if (catalogLoading) return;
+    const values = new Set(options.map((option) => encodeModelSelection({ modelId: option.modelId, provider: option.provider, source: option.source, ...(option.connectionId ? { connectionId: option.connectionId } : {}) })));
+    setRetryModels((current) => ({
+      ...current,
+      baseline: current.baseline && !values.has(current.baseline) ? "" : current.baseline,
+      candidate: current.candidate && !values.has(current.candidate) ? "" : current.candidate,
+      evaluator: current.evaluator && !values.has(current.evaluator) ? "" : current.evaluator,
+    }));
+  }, [options, catalogLoading]);
 
   // Poll while the experiment is running. Keyed on the status so polling restarts
   // automatically after a Resume (and stops as soon as a run is Stopped or finishes).
@@ -71,6 +86,20 @@ export function ExperimentDetailPage() {
       setError(caught instanceof Error ? caught.message : "Could not save decision");
     } finally {
       setIsSaving(false);
+    }
+  }
+
+  async function createRegressionCase(testCaseId: string) {
+    if (!experiment) return;
+    setCreatingRegressionId(testCaseId);
+    setError(null);
+    try {
+      const created = await api.post<{ datasetId: string; datasetName: string; requiresReview: boolean }>(`/api/experiments/${experiment.id}/regression-cases`, { testCaseId, variant: "B" });
+      setRegressionCase(created);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Could not create regression case");
+    } finally {
+      setCreatingRegressionId(null);
     }
   }
 
@@ -102,13 +131,22 @@ export function ExperimentDetailPage() {
   /** Continue the current run: only scenarios that are missing or failed are re-evaluated. */
   async function resumeRun() {
     if (!experiment) return;
+    const baselineSelection = decodeModelSelection(retryModels.baseline ?? "");
+    const candidateSelection = decodeModelSelection(retryModels.candidate ?? "");
+    const evaluatorSelection = experiment.evaluatorModel ? decodeModelSelection(retryModels.evaluator ?? "") : null;
+    if (!baselineSelection || !candidateSelection || (experiment.evaluatorModel && !evaluatorSelection)) {
+      setError("Choose an available provider connection for each configuration before resuming.");
+      return;
+    }
     setIsBusy(true);
     setError(null);
     try {
       await resumeExperiment(experiment.id, {
-        ...(retryModels.baselineModel ? { baselineModel: retryModels.baselineModel } : {}),
-        ...(retryModels.candidateModel ? { candidateModel: retryModels.candidateModel } : {}),
-        ...(retryModels.evaluatorModel ? { evaluatorModel: retryModels.evaluatorModel } : {}),
+        baselineModel: baselineSelection.modelId,
+        candidateModel: candidateSelection.modelId,
+        baselineSelection,
+        candidateSelection,
+        ...(evaluatorSelection ? { evaluatorModel: evaluatorSelection.modelId, evaluatorSelection } : {}),
       });
       await load();
     } catch (caught) {
@@ -122,6 +160,15 @@ export function ExperimentDetailPage() {
   if (!experiment) return <section className="intro"><p>Loading…</p></section>;
 
   const { metrics, criteria, scenarios, regressions } = experiment;
+  const failureScenarios = scenarios.filter((scenario) => ["quality_failure", "regression", "execution_error", "evaluator_error", "missing_result"].includes(scenario.failureAnalysis?.type ?? ""));
+  const failureCategoryCounts = new Map<string, number>();
+  const failedCriterionCounts = new Map<string, number>();
+  for (const scenario of scenarios) {
+    for (const category of scenario.failureAnalysis?.categories ?? []) failureCategoryCounts.set(category, (failureCategoryCounts.get(category) ?? 0) + 1);
+    for (const criterion of scenario.failureAnalysis?.failedCriteria ?? []) failedCriterionCounts.set(criterion.criterion, (failedCriterionCounts.get(criterion.criterion) ?? 0) + 1);
+  }
+  const categoryBreakdown = [...failureCategoryCounts.entries()].sort((left, right) => right[1] - left[1]);
+  const criterionBreakdown = [...failedCriterionCounts.entries()].sort((left, right) => right[1] - left[1]);
   const { baseline, candidate, comparison } = metrics;
   const percent = experiment.latestRun?.progress?.total
     ? Math.round((experiment.latestRun.progress.completed / experiment.latestRun.progress.total) * 100)
@@ -224,22 +271,10 @@ export function ExperimentDetailPage() {
             <>
               <p className="hint">{experiment.completion.retryable} evaluation{experiment.completion.retryable === 1 ? "" : "s"} still need results (stopped, failed, or not evaluated yet) — that is one result per configuration. Successful results are kept. If your current model is rate-limited, switch to another below, then resume.</p>
               <div className="retry-models">
-                <label>Baseline model
-                  <select value={retryModels.baselineModel ?? ""} onChange={(event) => setRetryModels((current) => ({ ...current, baselineModel: event.target.value as ModelId }))}>
-                    {models.map((item) => <option key={item.id} value={item.id} disabled={item.health === "unavailable"}>{modelOptionLabel(item)}</option>)}
-                  </select>
-                </label>
-                <label>Candidate model
-                  <select value={retryModels.candidateModel ?? ""} onChange={(event) => setRetryModels((current) => ({ ...current, candidateModel: event.target.value as ModelId }))}>
-                    {models.map((item) => <option key={item.id} value={item.id} disabled={item.health === "unavailable"}>{modelOptionLabel(item)}</option>)}
-                  </select>
-                </label>
+                <ModelSelector label="Baseline model" value={retryModels.baseline ?? ""} onChange={(baseline) => setRetryModels((current) => ({ ...current, baseline }))} options={options} loading={catalogLoading} />
+                <ModelSelector label="Candidate model" value={retryModels.candidate ?? ""} onChange={(candidate) => setRetryModels((current) => ({ ...current, candidate }))} options={options} loading={catalogLoading} />
                 {experiment.evaluatorModel && (
-                  <label>Judge model
-                    <select value={retryModels.evaluatorModel ?? ""} onChange={(event) => setRetryModels((current) => ({ ...current, evaluatorModel: event.target.value as ModelId }))}>
-                      {models.map((item) => <option key={item.id} value={item.id} disabled={item.health === "unavailable"}>{modelOptionLabel(item)}</option>)}
-                    </select>
-                  </label>
+                  <ModelSelector label="Judge model" value={retryModels.evaluator ?? ""} onChange={(evaluator) => setRetryModels((current) => ({ ...current, evaluator }))} options={options} loading={catalogLoading} />
                 )}
               </div>
               <button type="button" className="primary" disabled={isBusy} onClick={() => void resumeRun()}>
@@ -334,6 +369,8 @@ export function ExperimentDetailPage() {
             scenario={scenario}
             index={scenarios.indexOf(scenario)}
             expanded={expandedScenarios.has(scenario.testCaseId)}
+            creatingRegression={creatingRegressionId === scenario.testCaseId}
+            onCreateRegression={() => void createRegressionCase(scenario.testCaseId)}
             onToggle={() => setExpandedScenarios((current) => {
               const next = new Set(current);
               if (next.has(scenario.testCaseId)) next.delete(scenario.testCaseId);
@@ -343,6 +380,21 @@ export function ExperimentDetailPage() {
           />
         ))}
         {scenarios.length === 0 && <div className="empty">No scenario results yet.</div>}
+      </div>
+
+      <div className="section-heading"><div><p className="eyebrow">FAILURE ANALYSIS</p><h2>Evidence breakdown</h2></div><span className="badge">{failureScenarios.length} scenarios to review</span></div>
+      <div className="panel failure-analysis-panel">
+        <div className="failure-rollups">
+          <div><strong>{failureScenarios.filter((scenario) => scenario.failureAnalysis?.type === "regression").length}</strong><span>new candidate regressions</span></div>
+          <div><strong>{scenarios.filter((scenario) => scenario.failureAnalysis?.type === "improvement").length}</strong><span>improved scenarios</span></div>
+          <div><strong>{scenarios.filter((scenario) => scenario.failureAnalysis?.type === "quality_failure").length}</strong><span>candidate quality failures</span></div>
+          <div><strong>{scenarios.filter((scenario) => ["execution_error", "evaluator_error", "missing_result"].includes(scenario.failureAnalysis?.type ?? "")).length}</strong><span>incomplete or errored</span></div>
+        </div>
+        <div className="failure-breakdowns">
+          <div><h3>Failure patterns</h3>{categoryBreakdown.length ? categoryBreakdown.map(([label, count]) => <p key={label}><span>{label.replace(/_/g, " ")}</span><strong>{count}</strong></p>) : <p className="muted">No classified failure evidence.</p>}</div>
+          <div><h3>Criteria most often failed</h3>{criterionBreakdown.length ? criterionBreakdown.map(([label, count]) => <p key={label}><span>{label}</span><strong>{count}</strong></p>) : <p className="muted">No failed criteria recorded.</p>}</div>
+        </div>
+        {regressionCase && <p className="success" role="status">Regression dataset created: <Link to={`/datasets/${regressionCase.datasetId}`}>{regressionCase.datasetName}</Link>{regressionCase.requiresReview ? " · review the golden answer and rubric before use" : ""}</p>}
       </div>
 
       {/* Regressions */}
@@ -435,11 +487,13 @@ function SummaryRow({ label, baseline, candidate, delta, deltaKind }: {
   );
 }
 
-function ScenarioRow({ scenario, index, expanded, onToggle }: {
+function ScenarioRow({ scenario, index, expanded, onToggle, onCreateRegression, creatingRegression }: {
   scenario: ScenarioComparison;
   index: number;
   expanded: boolean;
   onToggle: () => void;
+  onCreateRegression: () => void;
+  creatingRegression: boolean;
 }) {
   const tone = metricDeltaTone(scenario.delta, "score");
   const regressed = tone === "bad";
@@ -459,23 +513,49 @@ function ScenarioRow({ scenario, index, expanded, onToggle }: {
       </button>
       {expanded && (
         <div className="scenario-evidence">
+          <div className={`failure-status ${scenario.failureAnalysis?.type ?? "missing_result"}`}>
+            <strong>{(scenario.failureAnalysis?.type ?? "missing result").replace(/_/g, " ")}</strong>
+            {(scenario.failureAnalysis?.categories ?? []).map((category) => <span key={category}>{category.replace(/_/g, " ")}</span>)}
+          </div>
+          {scenario.criteria.length > 0 && <div><strong>Rubric</strong><ul className="failure-criteria-list">{scenario.criteria.map((criterion) => <li key={criterion}>{criterion}</li>)}</ul></div>}
           {scenario.expectedOutput && <div><strong>Golden answer</strong><pre>{scenario.expectedOutput}</pre></div>}
           <div className="evidence-columns">
             <div>
               <strong>Baseline output</strong>
               <pre>{scenario.baselineOutput ?? "Not run"}</pre>
-              {scenario.baselineJudgement && <p className="judgement-evidence">Judge: {scenario.baselineJudgement.overallScore}/100 · {scenario.baselineJudgement.pass ? "Pass" : "Fail"}</p>}
+              {scenario.baselineExecution && <p className="judgement-evidence">{scenario.baselineExecution.status} · {scenario.baselineExecution.model ?? "model unknown"} · {scenario.baselineExecution.latencyMs ?? "—"} ms</p>}
+              {scenario.baselineExecution?.errorMessage && <p className="error">Execution: {scenario.baselineExecution.errorMessage}</p>}
+              {scenario.baselineJudgement && <JudgementEvidence judgement={scenario.baselineJudgement} />}
             </div>
             <div>
               <strong>Candidate output</strong>
               <pre>{scenario.candidateOutput ?? "Not run"}</pre>
-              {scenario.candidateJudgement && <p className="judgement-evidence">Judge: {scenario.candidateJudgement.overallScore}/100 · {scenario.candidateJudgement.pass ? "Pass" : "Fail"}</p>}
+              {scenario.candidateExecution && <p className="judgement-evidence">{scenario.candidateExecution.status} · {scenario.candidateExecution.model ?? "model unknown"} · {scenario.candidateExecution.latencyMs ?? "—"} ms</p>}
+              {scenario.candidateExecution?.errorMessage && <p className="error">Execution: {scenario.candidateExecution.errorMessage}</p>}
+              {scenario.candidateJudgement && <JudgementEvidence judgement={scenario.candidateJudgement} />}
             </div>
           </div>
+          {(scenario.failureAnalysis?.evidence.length ?? 0) > 0 && <div><strong>Evidence</strong><ul className="failure-criteria-list">{scenario.failureAnalysis!.evidence.map((item, evidenceIndex) => <li key={evidenceIndex}>{item}</li>)}</ul></div>}
+          {(scenario.failureAnalysis?.suggestions.length ?? 0) > 0 && <div className="failure-suggestions"><strong>Possible next steps</strong>{scenario.failureAnalysis!.suggestions.map((suggestion, suggestionIndex) => <p key={suggestionIndex}><b>{suggestion.action}</b><span>{suggestion.rationale}</span></p>)}</div>}
+          {scenario.failureAnalysis?.requiresHumanReview && <p className="hint">Review the golden answer and rubric before treating this as a regression gate.</p>}
+          {scenario.failureAnalysis && ["quality_failure", "regression", "improvement"].includes(scenario.failureAnalysis.type) && (
+            <button type="button" className="secondary" onClick={onCreateRegression} disabled={creatingRegression}>
+              {creatingRegression ? "Creating dataset…" : "Create regression case"}
+            </button>
+          )}
         </div>
       )}
     </article>
   );
+}
+
+function JudgementEvidence({ judgement }: { judgement: NonNullable<ScenarioComparison["candidateJudgement"]> }) {
+  if (judgement.status === "failed") return <p className="error">Evaluator error: {judgement.errorMessage ?? "No valid judgement was produced."}</p>;
+  return <>
+    <p className="judgement-evidence">Judge: {judgement.overallScore}/100 · {judgement.pass ? "Pass" : "Fail"}{judgement.evaluatorModel ? ` · ${judgement.evaluatorModel}` : ""}{judgement.threshold != null ? ` · threshold ${judgement.threshold}` : ""}</p>
+    {judgement.summary && <p className="judgement-evidence">{judgement.summary}</p>}
+    {judgement.criteriaResults.filter((criterion) => !criterion.pass).map((criterion) => <p className="judgement-evidence" key={criterion.id || criterion.criterion}><strong>{criterion.criterion}</strong>: {criterion.reason ?? `score ${criterion.score}`}</p>)}
+  </>;
 }
 
 function fmtDelta(delta: number, kind: MetricKind): string {

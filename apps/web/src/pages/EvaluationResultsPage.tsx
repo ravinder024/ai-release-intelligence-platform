@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { supportedModels, type EvaluationResult, type EvaluationRun, type Experiment, type ModelId } from "@prompt-playground/shared";
+import { supportedModels, type EvaluationResult, type EvaluationRun, type Experiment } from "@prompt-playground/shared";
 import { api, getExperiment } from "../api";
 
 export function EvaluationResultsPage() {
@@ -139,7 +139,6 @@ export function EvaluationResultsPage() {
             criteria={testCase.evaluationCriteria}
             resultA={findResult(run.results, testCase.id, "A")}
             resultB={findResult(run.results, testCase.id, "B")}
-            model={run.model}
           />
         ))}
       </div>
@@ -151,7 +150,7 @@ function findResult(results: EvaluationResult[], testCaseId: string, variant: "A
   return results.find((result) => result.testCaseId === testCaseId && result.variant === variant);
 }
 
-function ResultRow({ index, input, expected, notes, criteria, resultA, resultB, model }: {
+function ResultRow({ index, input, expected, notes, criteria, resultA, resultB }: {
   index: number;
   input: string;
   expected: string | null;
@@ -159,12 +158,13 @@ function ResultRow({ index, input, expected, notes, criteria, resultA, resultB, 
   criteria: string[] | null;
   resultA: EvaluationResult | undefined;
   resultB: EvaluationResult | undefined;
-  model: ModelId;
 }) {
+  const status = scenarioStatus(resultA, resultB);
   return (
     <article className="eval-row">
       <div className="eval-input">
         <span className="scenario-num">#{index + 1}</span>
+        <span className={`failure-status ${status.replace(/ /g, "_")}`}>{status}</span>
         <p>{input}</p>
         {expected && <p className="scenario-meta"><strong>Expected:</strong> {expected}</p>}
         {criteria?.length ? (
@@ -172,18 +172,30 @@ function ResultRow({ index, input, expected, notes, criteria, resultA, resultB, 
         ) : null}
         {notes && <p className="scenario-meta"><strong>Notes:</strong> {notes}</p>}
       </div>
-      <ResultCell result={resultA} model={model} label="A" />
-      <ResultCell result={resultB} model={model} label="B" />
+      <ResultCell result={resultA} label="A" />
+      <ResultCell result={resultB} label="B" />
     </article>
   );
 }
 
-function ResultCell({ result, model, label }: { result: EvaluationResult | undefined; model: ModelId; label: "A" | "B" }) {
+function scenarioStatus(resultA: EvaluationResult | undefined, resultB: EvaluationResult | undefined): string {
+  if (!resultA || !resultB) return "missing result";
+  if (resultA.status === "failed" || resultB.status === "failed") return "execution error";
+  if (resultA.judgement?.status === "failed" || resultB.judgement?.status === "failed") return "evaluator error";
+  if (!resultA.judgement || !resultB.judgement) return "judgement pending";
+  if (resultA.judgement.pass && !resultB.judgement.pass) return "candidate regression";
+  if (!resultA.judgement.pass && resultB.judgement.pass) return "improved";
+  if (!resultA.judgement.pass || !resultB.judgement.pass) return "quality failure";
+  return "pass";
+}
+
+function ResultCell({ result, label }: { result: EvaluationResult | undefined; label: "A" | "B" }) {
   if (!result || result.status === "failed") {
     return <div className="eval-cell failed"><span className="eval-label">Prompt {label}</span><p className="error">{result?.errorMessage ?? "Not run yet"}</p></div>;
   }
-  const pricing = supportedModels.find((item) => item.id === model);
-  const isFree = pricing !== undefined && pricing.inputCostPerMillion === 0 && pricing.outputCostPerMillion === 0;
+  const pricing = supportedModels.find((item) => item.id === String((result.modelMetadata as { model?: unknown } | null)?.model ?? ""));
+  const isFree = (result.modelMetadata as { source?: string; inputCostPerMillion?: number | null; outputCostPerMillion?: number | null } | null)?.source === "platform_free"
+    || pricing !== undefined && pricing.inputCostPerMillion === 0 && pricing.outputCostPerMillion === 0;
   const judgement = result.judgement;
 
   return (
@@ -191,16 +203,14 @@ function ResultCell({ result, model, label }: { result: EvaluationResult | undef
       <span className="eval-label">Prompt {label}</span>
       {judgement ? (
         <div className="judgement-panel">
-          <div className={`judge-pill ${judgement.pass ? "pass" : "fail"}`}>
-            {judgement.pass ? "Judge pass" : "Judge fail"}
-          </div>
-          <span className="judge-score">Score {judgement.overallScore}%</span>
           {judgement.status === "failed" ? (
             <p className="error">Judge error: {judgement.errorMessage ?? "Unknown issue"}</p>
-          ) : judgement.summary ? (
-            <p className="judgement-summary">{judgement.summary}</p>
-          ) : null}
-          {judgement.criteriaResults.length > 0 ? (
+          ) : <>
+            <div className={`judge-pill ${judgement.pass ? "pass" : "fail"}`}>{judgement.pass ? "Judge pass" : "Judge fail"}</div>
+            <span className="judge-score">Score {judgement.overallScore}%</span>
+            {judgement.summary ? <p className="judgement-summary">{judgement.summary}</p> : null}
+          </>}
+          {judgement.status === "completed" && judgement.criteriaResults.length > 0 ? (
             <details className="criteria-details">
               <summary>Criteria results</summary>
               <ul className="criteria-list">

@@ -35,7 +35,7 @@ cd /var/www/arip
 cat > .env <<'ENV'
 DATABASE_URL="postgresql://arip:CHANGE_ME_STRONG_PASSWORD@localhost:5432/arip?schema=public"
 PORT=5101
-OPENROUTER_API_KEY=""
+OPENROUTER_API_KEY="PASTE_SERVER_OPENROUTER_KEY"
 OPENROUTER_BASE_URL="https://openrouter.ai/api/v1"
 ENCRYPTION_KEY="PASTE_GENERATED_HEX_1"
 SESSION_COOKIE_SECRET="PASTE_GENERATED_HEX_2"
@@ -43,17 +43,18 @@ NODE_ENV=production
 ENV
 ```
 
-> `OPENROUTER_API_KEY` stays **empty** — with accounts, each user saves their own key in **Settings**. `NODE_ENV=production` makes the session cookie `Secure` (HTTPS-only).
+> Keep `OPENROUTER_API_KEY` on the server and never commit it. The server key is used for Platform Free model discovery, the five-evaluation allowance, and the scheduled OpenRouter health check. Users may also add their own provider keys in **Settings → API keys**. Without the server key, Platform Free models and health checks are unavailable. `NODE_ENV=production` makes the session cookie `Secure` (HTTPS-only).
 
-## 4. Install, build, migrate, seed, prune
+## 4. Install, build, migrate, and seed
 
 ```bash
 npm ci
 npm run build
 cd apps/api && npx prisma migrate deploy && cd ../..
 npm run db:seed      # creates the 2 sample datasets
-npm run db:prune     # wipes any user data + non-sample datasets (fresh start)
 ```
+
+Do **not** run `npm run db:prune` during an update: it deletes user accounts and all non-sample datasets, runs, and experiments. For an existing installation, take a database backup before migrations; `prisma migrate deploy` preserves existing rows.
 
 ## 5. Run as a systemd service
 
@@ -123,11 +124,13 @@ Certbot automatically installs the certificate and redirects HTTP → HTTPS. Ren
 
 ## 7. Verify
 
-1. Open **https://ai-evals-studio.duckdns.org** — you should land on **Sign in**.
-2. **Create an account**, then go to **Settings → Your OpenRouter key** and save your key.
-3. Run a comparison on the Playground, then create a private dataset and run an evaluation/experiment.
+1. Open **https://ai-evals-studio.duckdns.org** — you should land on the public **Home** page.
+2. **Create an account** (or sign in), then go to **Settings → API keys** to add and validate a labelled provider connection if you want to use BYOK.
+3. Run a comparison on the **Playground**, then create a private dataset and run an evaluation/experiment.
 4. Confirm only the 2 sample datasets are visible to anonymous visitors, and that they are read-only.
 5. Confirm the **Manual** menu item renders the User Manual.
+
+> Upgrading an older installation imports each account's previously hidden single OpenRouter key as a labelled **Imported key** connection. Those cards show **Models not loaded** until the owner clicks **Load models** once.
 
 ## Common operations
 
@@ -143,19 +146,6 @@ Certbot automatically installs the certificate and redirects HTTP → HTTPS. Ren
 
 - `ENCRYPTION_KEY` / `SESSION_COOKIE_SECRET` must be stable — changing them invalidates stored keys/sessions.
 - `.env` is gitignored; never commit it.
-- Each user's OpenRouter key is encrypted at rest and only used for their own requests.
-
-
-Next: deploy to Contabo (needs you on the server)
-The app is running locally on http://localhost:5101 right now for you to try. The remaining step is on your Contabo box (213.136.66.153), since I can't SSH from here. Follow Deployment.md — the short version:
-
-1. git clone the repo to /var/www/arip, write .env (DATABASE_URL, PORT=5101, ENCRYPTION_KEY, SESSION_COOKIE_SECRET, OPENROUTER_API_KEY="", NODE_ENV=production)
-2. npm ci && npm run build && npx prisma migrate deploy && npm run db:seed && npm run db:prune
-3. Create the arip.service systemd unit (config in the doc) and start it
-4. Add the nginx site for ai-evals-studio.duckdns.org → 127.0.0.1:5101, then certbot --nginx -d ai-evals-studio.duckdns.org
-
-Then open https://ai-evals-studio.duckdns.org, sign up, save your key in Settings, and run your first experiment.
-
-One note: ENCRYPTION_KEY and SESSION_COOKIE_SECRET must be generated once and kept stable on the server (changing them invalidates stored keys/sessions). If you want, I can also add a GitHub Actions workflow to auto-deploy on push — just say the word.
-
-10:21 AM
+- Each user's provider key is encrypted at rest and only used for their own requests. The platform OpenRouter key stays server-side and powers only the Platform Free catalog/checks.
+- Back up the database before production migrations; do not prune user data during an update.
+- Deploy only a commit that has been reviewed and exercised locally.

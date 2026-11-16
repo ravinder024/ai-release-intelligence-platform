@@ -37,6 +37,7 @@ const updateTestCaseSchema = z.object({
   evaluationCriteria: z.array(z.string().trim().min(1, "Each criterion must be non-empty")).nullable().optional(),
   notes: z.string().trim().max(10_000).nullable().optional(),
   position: z.number().int().min(0).optional(),
+  requiresReview: z.boolean().optional(),
 });
 
 export const datasetsRouter = Router();
@@ -166,6 +167,7 @@ datasetsRouter.patch("/datasets/:datasetId/test-cases/:testCaseId", authRequired
           : { evaluationCriteria: payload.evaluationCriteria ?? Prisma.JsonNull }),
         notes: payload.notes,
         position: payload.position,
+        requiresReview: payload.requiresReview,
       },
     });
     response.json(toTestCase(testCase));
@@ -221,6 +223,8 @@ type TestCaseRow = {
   evaluationCriteria: Prisma.JsonValue;
   notes: string | null;
   position: number;
+  requiresReview: boolean;
+  sourceResultId: string | null;
 };
 
 function toTestCase(testCase: TestCaseRow): DatasetTestCase {
@@ -234,6 +238,8 @@ function toTestCase(testCase: TestCaseRow): DatasetTestCase {
       : null,
     notes: testCase.notes,
     position: testCase.position,
+    requiresReview: testCase.requiresReview,
+    sourceResultId: testCase.sourceResultId,
   };
 }
 

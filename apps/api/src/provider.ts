@@ -1,5 +1,5 @@
 import OpenAI, { APIConnectionError, APIError, AuthenticationError, InternalServerError, NotFoundError, PermissionDeniedError, RateLimitError } from "openai";
-import { isSupportedFreeModel, supportedModels, type ModelId } from "@prompt-playground/shared";
+import { isSupportedFreeModel, supportedModels } from "@prompt-playground/shared";
 
 export type ProviderResult = {
   output: string;
@@ -8,7 +8,7 @@ export type ProviderResult = {
 };
 
 export interface ModelProvider {
-  execute(args: { model: ModelId; prompt: string; input: string }): Promise<ProviderResult>;
+  execute(args: { model: string; prompt: string; input: string }): Promise<ProviderResult>;
 }
 
 const MAX_RETRIES = 3;
@@ -64,7 +64,7 @@ class OpenRouterProvider implements ModelProvider {
     });
   }
 
-  async execute({ model, prompt, input }: { model: ModelId; prompt: string; input: string }) {
+  async execute({ model, prompt, input }: { model: string; prompt: string; input: string }) {
     if (!isSupportedFreeModel(model)) {
       throw new Error("Only supported OpenRouter free models are allowed.");
     }
@@ -120,12 +120,17 @@ export function getModelProvider(): ModelProvider {
   return new OpenRouterProvider();
 }
 
-export function estimateCost(model: ModelId, inputTokens: number, outputTokens: number) {
-  const pricing = supportedModels.find((candidate) => candidate.id === model);
-  if (!pricing) throw new Error(`Unsupported model: ${model}`);
+export function estimateCost(
+  model: string,
+  inputTokens: number,
+  outputTokens: number,
+  pricing?: { inputCostPerMillion: number | null; outputCostPerMillion: number | null },
+): number | null {
+  const modelPricing = pricing ?? supportedModels.find((candidate) => candidate.id === model) ?? null;
+  if (!modelPricing || modelPricing.inputCostPerMillion === null || modelPricing.outputCostPerMillion === null) return null;
 
   return (
-    (inputTokens / 1_000_000) * pricing.inputCostPerMillion +
-    (outputTokens / 1_000_000) * pricing.outputCostPerMillion
+    (inputTokens / 1_000_000) * modelPricing.inputCostPerMillion +
+    (outputTokens / 1_000_000) * modelPricing.outputCostPerMillion
   );
 }

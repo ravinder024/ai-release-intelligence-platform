@@ -3,7 +3,6 @@ import { z } from "zod";
 import bcrypt from "bcryptjs";
 import { prisma } from "../prisma.js";
 import { createProvider } from "../provider.js";
-import { encryptKey } from "../crypto.js";
 import { authRequired, clearSessionCookie, createSession, generateResetCode, hashToken, readCookie, setSessionCookie, SESSION_COOKIE } from "../auth.js";
 import { supportedModels } from "@prompt-playground/shared";
 import { getUsageSummary } from "../services/usage.js";
@@ -44,10 +43,6 @@ const resetPasswordSchema = z.object({
   email: emailSchema,
   code: z.string().trim().min(1, "Reset code is required").max(32),
   password: passwordSchema,
-});
-
-const keySchema = z.object({
-  openRouterApiKey: z.string().trim().min(1, "OpenRouter API key is required").max(300),
 });
 
 const validateKeySchema = z.object({
@@ -211,12 +206,13 @@ authRouter.post("/auth/login", async (request, response, next) => {
 
     const token = await createSession(user.id);
     await prisma.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } });
+    const connectionCount = await prisma.providerConnection.count({ where: { userId: user.id } });
     setSessionCookie(response, token);
     return response.json({
       id: user.id,
       email: user.email,
       displayName: user.displayName,
-      hasKey: Boolean(user.openRouterKeyEncrypted),
+      hasKey: connectionCount > 0,
       role: user.role,
       provider: "local",
     });
@@ -269,7 +265,7 @@ authRouter.get("/auth/me", async (request, response, next) => {
     if (!token) return response.status(401).json({ error: "Not signed in" });
     const session = await prisma.session.findUnique({
       where: { tokenHash: hashToken(token) },
-      include: { user: { include: { identities: { select: { provider: true } } } } },
+      include: { user: { include: { identities: { select: { provider: true } }, _count: { select: { providerConnections: true } } } } },
     });
     if (!session || session.expiresAt.getTime() < Date.now()) {
       return response.status(401).json({ error: "Not signed in" });
@@ -278,7 +274,7 @@ authRouter.get("/auth/me", async (request, response, next) => {
       id: session.user.id,
       email: session.user.email,
       displayName: session.user.displayName,
-      hasKey: Boolean(session.user.openRouterKeyEncrypted),
+      hasKey: session.user._count.providerConnections > 0,
       role: session.user.role,
       provider: session.user.identities.some((identity) => identity.provider === "google") ? "google" : "local",
     });
@@ -348,58 +344,24 @@ authRouter.post("/auth/reset-password", async (request, response, next) => {
   }
 });
 
-// GET /api/auth/key — return masked BYOK metadata only (never the raw key)
-authRouter.get("/auth/key", authRequired, async (request, response, next) => {
-  try {
-    const user = await prisma.user.findUnique({
-      where: { id: request.user!.id },
-      select: { openRouterKeyLast4: true, openRouterKeyUpdatedAt: true },
-    });
-    if (!user?.openRouterKeyLast4) return response.json({ configured: false, provider: null, maskedKey: null, lastUpdated: null });
-    return response.json({
-      configured: true,
-      provider: "OpenRouter",
-      maskedKey: `sk-••••••••••${user.openRouterKeyLast4}`,
-      lastUpdated: user.openRouterKeyUpdatedAt?.toISOString() ?? null,
-    });
-  } catch (error) {
-    next(error);
-  }
+// GET /api/auth/key — legacy single-key endpoint. Removed: provider keys are managed
+// through /api/provider-connections (Settings → API keys).
+authRouter.get("/auth/key", authRequired, async (_request, response) => {
+  return response.status(410).json({
+    error: "This endpoint was retired. Manage your API keys under Settings → API keys.",
+  });
 });
 
-// PUT /api/auth/key — store the signed-in user's OpenRouter key (encrypted), validated first
-authRouter.put("/auth/key", authRequired, async (request, response, next) => {
-  try {
-    const payload = keySchema.parse(request.body);
-    const test = await testOpenRouterKey(payload.openRouterApiKey);
-    if (!test.ok) {
-      return response.status(400).json({ error: `Key rejected by OpenRouter: ${test.error ?? "unknown error"}` });
-    }
-    await prisma.user.update({
-      where: { id: request.user!.id },
-      data: {
-        openRouterKeyEncrypted: encryptKey(payload.openRouterApiKey),
-        openRouterKeyLast4: payload.openRouterApiKey.slice(-4),
-        openRouterKeyUpdatedAt: new Date(),
-      },
-    });
-    return response.json({ ok: true });
-  } catch (error) {
-    next(error);
-  }
+authRouter.put("/auth/key", authRequired, async (_request, response) => {
+  return response.status(410).json({
+    error: "This endpoint was retired. Add a provider connection under Settings → API keys.",
+  });
 });
 
-// DELETE /api/auth/key — remove the user's stored key
-authRouter.delete("/auth/key", authRequired, async (request, response, next) => {
-  try {
-    await prisma.user.update({
-      where: { id: request.user!.id },
-      data: { openRouterKeyEncrypted: null, openRouterKeyLast4: null, openRouterKeyUpdatedAt: null },
-    });
-    return response.json({ ok: true });
-  } catch (error) {
-    next(error);
-  }
+authRouter.delete("/auth/key", authRequired, async (_request, response) => {
+  return response.status(410).json({
+    error: "This endpoint was retired. Remove the connection under Settings → API keys.",
+  });
 });
 
 // POST /api/keys/validate — validate a key without saving it (used by the UI before storing)

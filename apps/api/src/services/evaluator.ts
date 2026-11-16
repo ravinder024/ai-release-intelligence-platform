@@ -1,5 +1,4 @@
 import { getModelProvider } from "../provider.js";
-import type { ModelId } from "@prompt-playground/shared";
 
 export type JudgementCriterion = {
   criterion: string;
@@ -21,7 +20,7 @@ export type JudgementResult = {
 };
 
 export type JudgeResultArgs = {
-  evaluatorModel: ModelId;
+  evaluatorModel: string;
   evaluatorPrompt: string | null;
   input: string;
   response: string;

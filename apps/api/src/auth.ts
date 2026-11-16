@@ -27,12 +27,12 @@ export function generateResetCode(): string {
   return randomBytes(4).toString("hex").toUpperCase();
 }
 
-function toAuthUser(user: { id: string; email: string; displayName: string; openRouterKeyEncrypted: string | null; role: "user" | "admin"; identities?: Array<{ provider: string }> }): AuthUser {
+function toAuthUser(user: { id: string; email: string; displayName: string; role: "user" | "admin"; identities?: Array<{ provider: string }>; _count?: { providerConnections: number } }): AuthUser {
   return {
     id: user.id,
     email: user.email,
     displayName: user.displayName,
-    hasKey: Boolean(user.openRouterKeyEncrypted),
+    hasKey: (user._count?.providerConnections ?? 0) > 0,
     role: user.role,
     provider: user.identities?.some((identity) => identity.provider === "google") ? "google" : "local",
   };
@@ -96,7 +96,7 @@ async function getUserFromRequest(request: Request): Promise<AuthUser | null> {
   if (!token) return null;
   const session = await prisma.session.findUnique({
     where: { tokenHash: hashToken(token) },
-    include: { user: { include: { identities: { select: { provider: true } } } } },
+    include: { user: { include: { identities: { select: { provider: true } }, _count: { select: { providerConnections: true } } } } },
   });
   if (!session) return null;
   if (session.expiresAt.getTime() < Date.now()) {

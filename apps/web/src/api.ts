@@ -22,7 +22,7 @@ export const api = {
   delete: <T>(path: string) => request<T>(path, { method: "DELETE" }),
 };
 
-import type { CreateExperimentRequest, Experiment, ExperimentDetail, ExperimentDecision, EvaluationRun, ModelId } from "@prompt-playground/shared";
+import type { CreateExperimentRequest, Experiment, ExperimentDetail, ExperimentDecision, EvaluationRun, ModelSelection } from "@prompt-playground/shared";
 
 export async function getExperiments(): Promise<Experiment[]> {
   return api.get<Experiment[]>("/api/experiments");
@@ -48,14 +48,14 @@ export async function stopExperiment(id: string): Promise<{ ok: boolean; stopped
 /** Continue the current run: only the scenarios that are missing or failed are re-evaluated. */
 export async function resumeExperiment(
   id: string,
-  models?: { baselineModel?: ModelId; candidateModel?: ModelId; evaluatorModel?: ModelId },
+  models?: { baselineModel?: string; candidateModel?: string; evaluatorModel?: string; baselineSelection?: ModelSelection; candidateSelection?: ModelSelection; evaluatorSelection?: ModelSelection },
 ): Promise<{ resumed: number; remaining: number }> {
   return api.post<{ resumed: number; remaining: number }>(`/api/experiments/${id}/resume`, models ?? {});
 }
 
 export async function retryExperiment(
   id: string,
-  models?: { baselineModel?: ModelId; candidateModel?: ModelId; evaluatorModel?: ModelId },
+  models?: { baselineModel?: string; candidateModel?: string; evaluatorModel?: string; baselineSelection?: ModelSelection; candidateSelection?: ModelSelection; evaluatorSelection?: ModelSelection },
 ): Promise<{ retried: number; remaining: number }> {
   return api.post<{ retried: number; remaining: number }>(`/api/experiments/${id}/retry`, models ?? {});
 }
@@ -64,8 +64,10 @@ export async function createIteration(
   id: string,
   payload: {
     candidatePrompt: string;
-    candidateModel: ModelId;
-    evaluatorModel?: ModelId;
+    candidateModel: string;
+    candidateSelection?: ModelSelection;
+    evaluatorModel?: string;
+    evaluatorSelection?: ModelSelection;
     evaluatorThreshold?: number;
     evaluatorPrompt?: string;
   },

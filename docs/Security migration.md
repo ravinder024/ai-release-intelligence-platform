@@ -58,7 +58,7 @@ Required in production:
 
 ## Usage model
 
-- Each user receives 5 platform-funded complete evaluations.
+- Standard users receive 5 platform-funded complete evaluations. Admin and the configured Tester have unlimited Platform Free usage; operators can grant the same exemption to additional existing usernames with the comma-separated `FULL_ACCESS_USERNAMES` environment setting.
 - One dataset/experiment evaluation run consumes one reservation.
 - Invalid requests do not consume credits.
 - Fully failed provider infrastructure runs release their reservation.

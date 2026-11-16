@@ -2,13 +2,38 @@
 
 ## Overview
 
-Prompt Playground is an AI evaluation workspace for comparing prompt variants and running benchmark datasets.
+AI-Evals Studio is an AI evaluation workspace for comparing prompt variants, running benchmark datasets, and analyzing failures before release.
 
 Current capabilities:
-- Phase 1: compare two prompt variants on a single input and save the comparison history.
+- Home: a public landing page that explains the product and links straight into the three workspaces.
+- Phase 1: compare two prompt variants on a single input, stop or retry a run, and save the comparison history.
 - Phase 2: build a dataset of scenarios, run both prompts across the dataset, and review per-case outputs, latency, tokens, and estimated cost.
+- Phase 3: score responses with an LLM judge, including per-criterion results and pass rates.
+- Phase 4: run experiments (baseline vs candidate), detect regressions, control runs (Stop / Resume / Restart), and record a product decision.
+- Phase 5: accounts and multi-provider credentials (Platform Free + BYOK across OpenAI, Anthropic, Google Gemini, DeepSeek, OpenRouter) and Failure Analysis with regression-case creation.
 
 This manual is the living guide for the platform. It will be updated after every completed phase.
+
+## Home (start here)
+
+`/` is the Home page and it is public — you can read it before signing in.
+
+- A short explanation of what the product is for.
+- Three clickable cards that open the three workspaces: **Prompt Playground**, **Datasets**, and **Experiments**.
+- A **Write → Evaluate → Decide** strip that summarises the workflow.
+- An **About the builder** section with the background of the person who built this platform.
+
+Signing in returns you to Home. From there the top navigation is the fastest way around:
+
+| Navigation item | Opens | Sign-in needed |
+| --- | --- | --- |
+| **Home** | `/` — product overview and About | No |
+| **Playground** | `/playground` — compare two prompts on one input | Yes |
+| **Datasets** | `/datasets` — sample datasets for everyone; your own are private | Sample data: no |
+| **Experiments** | `/experiments` — baseline vs candidate with judging | Yes |
+| **Manual** | `/manual` — this document | No |
+
+Your account and API keys live behind the avatar button in the top-right corner (**Settings**).
 
 ## Getting started
 
@@ -18,17 +43,23 @@ The whole product runs on a single port (`5101`). The API server also serves the
    - `npm run dev` (builds both apps and starts the server)
    - Open the app in the browser at `http://localhost:5101`.
 2. Ensure `DATABASE_URL` is configured in the root `.env` (`PORT=5101`), plus `ENCRYPTION_KEY` and `SESSION_COOKIE_SECRET`.
-3. **Continue with Google** to create/sign in to an account. You receive five platform-funded free evaluations before BYOK is required.
-4. Use the `Datasets` page to create benchmark datasets and evaluate prompt quality.
+3. You land on the public **Home** page. Choose **Sign in to start**, then either sign in with a username/email and password, **Continue with Google** (when configured), or **Create an account**.
+4. Standard accounts receive five platform-funded evaluations; Admin and any account listed in `FULL_ACCESS_USERNAMES` have unlimited Platform Free access (see *Accounts & your private workspace*).
+5. Use the **Datasets** page to create benchmark datasets and evaluate prompt quality.
 
 > Port notes: the app always runs on `5101`. Before starting, stop any other Node servers so no other app ports (e.g. `3001`, `5173`) are in use.
 
 ## Accounts & your private workspace
 
-- **Sign in:** public users choose **Continue with Google**. The application stores the Google issuer/subject identity mapping, not provider tokens in the browser. The local password login is reserved for the emergency Admin account.
-- **Free evaluations:** each account receives five complete platform-funded evaluation runs. A run can cover many scenarios; it counts as one evaluation. Invalid requests and fully failed infrastructure runs do not consume a credit.
-- **Your OpenRouter key:** BYOK is optional. After free credits are exhausted, go to **Settings → Your OpenRouter key** and save it. It is validated, encrypted at rest, never displayed again, and used only for your requests.
-- **Free models only:** the platform rejects paid or unknown OpenRouter model IDs server-side.
+- **Creating an account:** open **Create an account** on the sign-in page and choose a name, email, and password (at least 8 characters).
+- **Signing in:** enter your **username or email** plus your password. **Continue with Google** is also available when the deployment configures it; it stores the Google identity mapping, never provider tokens in the browser.
+- **Forgot your password?** Use **Forgot password?** on the sign-in page. Enter your email to receive an in-app reset code, then set a new password with that code. All existing sessions are signed out after a reset.
+- **Change your password:** **Settings → Security**. Signing out everywhere else happens automatically.
+- **Platform Free evaluations:** standard accounts receive five complete platform-funded runs. Admin, the configured Tester, and any username listed in `FULL_ACCESS_USERNAMES` have unlimited access. A run can cover many scenarios; it counts as one evaluation. Invalid requests and incomplete/failed runs do not consume a credit.
+- **Checking your usage:** **Settings → Usage & plan** shows how many Platform Free evaluations you have left, how many are in progress, and — for unlimited accounts — the word **Unlimited** instead of a number.
+- **Your API keys (BYOK):** optional. Go to **Settings → API keys**, pick a provider, give the key a **label**, and save it. You can add **several keys per provider** (for example `Personal` and `Work`) and each one is a separate selectable option. Each saved key appears as its own card where you can rename it, replace the key, reload its model list, or remove it.
+- **Providers:** OpenAI, Anthropic, Google Gemini, DeepSeek, and OpenRouter.
+- **Free models only on Platform Free:** Platform Free models are discovered dynamically from OpenRouter's free catalog and use the platform account. BYOK models are discovered from your own key.
 - **Private workspace:** your datasets, evaluations, and experiments are visible only to you. The two sample datasets (Customer Support, Travel - Flights) are shared and read-only for everyone.
 - **Sign out:** use **Settings → Sign out** or the top-right menu.
 
@@ -36,12 +67,24 @@ The whole product runs on a single port (`5101`). The API server also serves the
 
 When you want to compare two prompt variants on one example:
 
-1. Open the `Playground` page.
+1. Open the **Playground** page (`/playground`).
 2. Select a model and enter a shared input.
 3. Write Prompt A and Prompt B.
-4. Run the comparison.
+4. Run the comparison. The run starts immediately and the page updates on its own as each prompt answers — you can leave the page without losing the run.
 5. Review the outputs side by side with latency, token counts, and estimated cost.
 6. Use the saved history to revisit earlier comparisons.
+
+### Playground run controls
+
+| Control | When it appears | What it does |
+| --- | --- | --- |
+| **Stop run** | While the run is in progress | Ends the run and keeps whatever already finished. The run becomes **Interrupted**. |
+| **Retry** | On an interrupted or partially failed run | Starts a **new comparison** with the same model, input, and prompts. The old run stays in the history. |
+| **Discard** | On any finished run | Deletes the run and its responses. This cannot be undone. |
+
+The same controls appear on each row of **Recent runs**, so you can clean up or retry directly from the list.
+
+A run shows **Interrupted** when you stop it, or when the server restarted while it was still running. Interrupted runs are never left spinning: on the next start the platform closes them automatically, and you can Retry or Discard from the history.
 
 Use Phase 1 when you are exploring prompt directions or validating a quick prompt change.
 
@@ -120,21 +163,18 @@ Human review and future scope:
   - estimated cost is useful even for free models, especially once paid models are added later
 - Keep prompt variants focused on the behavior difference you want to test: tone, clarity, brevity, or structure.
 
-## What this platform does not do yet
-
-The platform now includes Google-first accounts, an emergency Admin role, private workspaces, server-side usage limits, and encrypted optional BYOK. SMTP email is optional and is not required for the current Google sign-in flow. Reviewer queues, dashboards, and built-in hallucination detection remain future work.
-
-Those features are planned for later phases.
-
 ## Current phase status
 
-- Phase 1: complete — single input prompt comparison with history.
+- Home: complete — public landing page with product overview and About the builder.
+- Phase 1: complete — single input prompt comparison with history, plus Stop / Retry / Discard run controls.
 - Phase 2: complete — dataset evaluation, benchmark scenarios, saved runs.
 - Phase 3: complete — automated LLM judging and per-criterion scoring.
 - Phase 4: complete — experiments and reproducible snapshots.
-- Phase 5: in progress — Google OIDC hardening, secure sessions, Admin bootstrap, five free evaluations, optional BYOK, and free-model enforcement.
+- Phase 5: complete — accounts, multi-provider Platform Free + BYOK credentials, immutable configuration snapshots, server-enforced quota policy, and Failure Analysis with regression-case creation.
 
-### Phase 4 workflow: experiments and decisions
+Known limits are listed under *What this does not do* near the end of this manual.
+
+## Phase 4 workflow: experiments and decisions
 
 Phase 4 makes Experiments a first-class product concept. An experiment is a controlled comparison between two AI configurations — a **Baseline** (the current configuration) and a **Candidate** (the proposed configuration) — evaluated on the same golden dataset. It answers: *"Did my AI change actually improve the product?"*
 
@@ -208,6 +248,105 @@ Notes:
 - **Restart** consumes one platform-funded evaluation credit (same as a first run); **Resume** continues the existing run and does not.
 - A low judge score is a **quality** failure, not an execution failure. Those results are already complete, so they are never re-run by Resume — that is a real finding, not an error.
 - Progress updates every few seconds on its own, including after a Resume.
+
+## Model providers (Platform Free vs BYOK)
+
+Every model selector in the product — Playground, dataset evaluation, experiment baseline/candidate, and the judge — uses the same list. Each entry reads:
+
+`[Category] · [Provider] · [Key Label] · [Model]`
+
+Examples:
+
+- `Platform Free · OpenRouter · Default · [Model]`
+- `BYOK · Anthropic · Pro_key · [Model]`
+- `BYOK · DeepSeek · Work · [Model]`
+
+The same model reached through two different keys appears as **two separate entries**, so you always know which credential a run will use.
+
+**Platform Free** is funded by the platform and counts against your five free evaluations. **BYOK** runs use your own key and do not consume platform credits.
+
+### Managing connections
+
+1. Open **Settings → API keys** (avatar menu → Settings).
+2. In **Add a connection**, choose a provider, type a **connection label**, and paste the API key.
+3. Click **Validate and save**. The platform lists the provider's models and then sends a **single-token test request** with the cheapest model, so a key that cannot actually run a request is rejected instead of silently saved.
+4. The connection appears as its own card and its models show up in every model selector immediately — no page reload needed.
+5. On each card you can:
+   - **Rename or replace key** — change the label, paste a new key, or both.
+   - **Refresh models** — reload that key's model list.
+   - **Remove** — asks for confirmation first, then deletes the connection.
+
+Each card also shows the masked key (last four characters), when the connection was added, and when its model list was last refreshed.
+
+If a card says **Models not loaded**, click **Load models** once. This happens for keys that were imported from an older version of the product, because the platform cannot fetch a model list without calling the provider.
+
+### What happens when you change or remove a key
+
+- Adding, renaming, replacing, or removing a connection refreshes the model list right away.
+- If a connection is removed, any selection that pointed at it is **cleared** rather than silently switched to another key.
+- Runs whose configuration is already frozen keep their recorded provider, category, connection label, and model, so historical results stay readable. The stored credentials are never part of that record.
+
+## Failure analysis
+
+Phase 5 adds a **Failure Analysis** layer on top of the existing judge results. It reuses the same evaluations — it does not create a second evaluation engine.
+
+### On the Experiment Detail page
+
+- **Evidence breakdown** — how many scenarios are new candidate regressions, improved, genuine candidate quality failures, or incomplete/errored.
+- **Failure patterns** — deterministic categories derived from the rubric criteria and the judge's own words: unsupported claims, missing information, incorrect next steps, instruction violations, incomplete responses, criterion failures, and an explicit **unclassified** bucket when evidence is thin.
+- **Criteria most often failed** — which rubric criteria fail most across the dataset.
+- **Per-scenario failure detail** — expand any scenario to see the input, golden answer, rubric, baseline and candidate outputs, the judge's score, pass/fail, summary and per-criterion reasons, plus the model, latency, and status of each execution.
+
+Failures are clearly separated into:
+
+- **Genuine quality failure** — the judge scored the answer and it did not meet the bar.
+- **Regression** — the candidate passed less than the baseline.
+- **Execution error** — the model call itself failed.
+- **Evaluator error** — the judge returned a malformed or failed response. This is shown as an evaluator problem, **not** as a low-quality AI answer.
+- **Missing result** — a required execution or judgement is absent.
+
+### Suggested next steps
+
+Each failure comes with evidence-backed suggestions such as clarifying an instruction, adding an explicit constraint, tightening a rubric criterion, adding an edge case, or investigating a model-specific regression. Every suggestion cites the scenario (and usually the criterion) behind it, and is labelled as a **hypothesis** — the platform never rewrites or deploys prompts for you.
+
+### Turning a failure into a regression case
+
+1. Expand a failing (or improved) scenario on the Experiment Detail page.
+2. Click **Create regression case**.
+3. The platform creates a **new, separate dataset** containing that scenario, preserving the input, the golden answer, and the rubric, and linking it back to the original result.
+
+The original dataset and all historical evaluations are **never modified**.
+
+If the captured scenario has no golden answer or no rubric, the new case is marked **Requires human review**. You can clear that marker from the dataset page once the expected behaviour has been confirmed.
+
+### Re-evaluating regression cases
+
+A regression dataset is a normal dataset, so you can run it through the existing evaluation or experiment flow to confirm a fix. Nothing new is required.
+
+## What this does not do
+
+By design, the platform does **not**:
+
+- automatically rewrite or deploy prompts,
+- make release decisions for you (the recommendation is advisory),
+- fail over automatically between credentials,
+- monitor live production traffic,
+- use consumer subscription logins (Claude/ChatGPT/Gemini) or bill users.
+
+Reviewer queues, human approval workflows, and richer release-intelligence dashboards remain future work.
+
+## For operators
+
+These settings live in the server `.env` and cannot be changed from the UI:
+
+| Setting | Purpose |
+| --- | --- |
+| `FULL_ACCESS_USERNAMES` | Comma-separated, case-insensitive usernames that get unlimited Platform Free usage in addition to Admin and the configured Tester. |
+| `ADMIN_USERNAME` / `ADMIN_PASSWORD` | Emergency Admin account, recreated on every server start. |
+| `TESTER_USERNAME` / `TESTER_PASSWORD` | Optional demo account with full access. |
+| `OPENROUTER_API_KEY` | Funds Platform Free model discovery and runs. |
+| `PLAYGROUND_CALL_TIMEOUT_MS` | How long a single Playground model call may take before it is marked as timed out (default 60000). |
+| `KEY_VALIDATION_PROBE` | Set to `false` to skip the one-token inference check when saving a provider key (not recommended). |
 
 ## Updating this manual
 

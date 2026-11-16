@@ -3,7 +3,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import type { DatasetDetail, DatasetTestCase } from "@prompt-playground/shared";
 import { api } from "../api";
 
-const emptyScenario = { input: "", expectedOutput: "", evaluationCriteria: "", notes: "" };
+const emptyScenario = { input: "", expectedOutput: "", evaluationCriteria: "", notes: "", requiresReview: false };
 
 export function DatasetDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -78,6 +78,7 @@ export function DatasetDetailPage() {
       expectedOutput: testCase.expectedOutput ?? "",
       evaluationCriteria: testCase.evaluationCriteria?.join("\n") ?? "",
       notes: testCase.notes ?? "",
+      requiresReview: testCase.requiresReview ?? false,
     });
   }
 
@@ -93,6 +94,7 @@ export function DatasetDetailPage() {
           .map((line) => line.trim())
           .filter(Boolean),
         notes: editForm.notes || null,
+        requiresReview: editForm.requiresReview,
       });
       setDataset({
         ...dataset,
@@ -216,6 +218,7 @@ export function DatasetDetailPage() {
                   <label>Expected output<textarea value={editForm.expectedOutput} onChange={(e) => setEditForm((c) => ({ ...c, expectedOutput: e.target.value }))} rows={2} /></label>
                   <label>Evaluation criteria<textarea value={editForm.evaluationCriteria} onChange={(e) => setEditForm((c) => ({ ...c, evaluationCriteria: e.target.value }))} rows={2} /></label>
                   <label>Notes<textarea value={editForm.notes} onChange={(e) => setEditForm((c) => ({ ...c, notes: e.target.value }))} rows={2} /></label>
+                  <label className="review-toggle"><input type="checkbox" checked={editForm.requiresReview} onChange={(e) => setEditForm((c) => ({ ...c, requiresReview: e.target.checked }))} /> Requires human review</label>
                   <div className="row-actions">
                     <button onClick={() => saveEdit(testCase)} disabled={busy}>Save</button>
                     <button onClick={() => setEditingId(null)}>Cancel</button>
@@ -229,6 +232,7 @@ export function DatasetDetailPage() {
                   </div></div>
                   <p className="scenario-input">{testCase.input}</p>
                   {testCase.expectedOutput && <p className="scenario-meta"><strong>Expected:</strong> {testCase.expectedOutput}</p>}
+                  {testCase.requiresReview && <span className="review-needed">Review required</span>}
                   {testCase.evaluationCriteria?.length ? (
                     <p className="scenario-meta"><strong>Criteria:</strong> {testCase.evaluationCriteria.join(", ")}</p>
                   ) : null}

@@ -30,6 +30,8 @@ This document captures the implementation decisions for Phase 4 (first-class exp
 ## Tests
 - `apps/api/src/tests/metrics-tests.ts` — 18 unit tests (aggregation, deltas, criterion/scenario comparison, regression detection). Run via `npm test`.
 - `apps/api/src/tests/experiments-integration-tests.ts` — 22 deterministic integration/E2E tests using a fake provider + fake judge (run via `npm run test:integration`): create → run → metrics/deltas/regressions → decision persistence → reproducibility after dataset rename → cleanup.
+- ⚠️ The auth integration suite calls `pruneData()`, so `npm run test:integration` **wipes local users and non-sample datasets**. Only run it against a local/dev database, then `npm run db:seed` and restart the API (admin/tester accounts are recreated from `.env` on start).
+- Live end-to-end smoke test against a running server (Stop → Resume → Restart on all 7 sample scenarios): `npm run verify:experiment` (add `--account=admin`, `--stop-after=20`, `--timeout-min=25` as needed).
 
 ## Phase-4 refinement pass (2026-08-26)
 

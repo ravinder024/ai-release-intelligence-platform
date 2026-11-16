@@ -1,8 +1,10 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { supportedModels, type Dataset, type ModelId } from "@prompt-playground/shared";
+import { type Dataset } from "@prompt-playground/shared";
 import { api, createExperiment, runExperiment } from "../api";
-import { modelOptionLabel, useModels } from "../useModels";
+import { ModelSelector } from "../components/ModelSelector";
+import { decodeModelSelection, encodeModelSelection } from "../components/ModelSelector";
+import { useProviderModels } from "../useModels";
 
 const defaultBaseline = "You are a support assistant. Answer the customer's question clearly and helpfully.";
 const defaultCandidate = "You are a support assistant. Acknowledge the concern first, answer clearly, and never make claims you cannot support.";
@@ -11,7 +13,7 @@ const defaultEvaluatorPrompt = "You are an automated judge that evaluates assist
 const steps = ["Define", "Configure", "Review"];
 
 export function NewExperimentPage() {
-  const { models, defaultModel, checkedAt } = useModels();
+  const { options, loading: catalogLoading } = useProviderModels();
   const navigate = useNavigate();
   const [step, setStep] = useState(0);
   const [datasets, setDatasets] = useState<Dataset[]>([]);
@@ -19,11 +21,12 @@ export function NewExperimentPage() {
   const [hypothesis, setHypothesis] = useState("");
   const [datasetId, setDatasetId] = useState("");
   const [baselinePrompt, setBaselinePrompt] = useState(defaultBaseline);
-  const [baselineModel, setBaselineModel] = useState<ModelId>(supportedModels[0].id);
+  const [baselineSelectionValue, setBaselineSelectionValue] = useState("");
   const [candidatePrompt, setCandidatePrompt] = useState(defaultCandidate);
-  const [candidateModel, setCandidateModel] = useState<ModelId>(supportedModels[0].id);
+  const [candidateSelectionValue, setCandidateSelectionValue] = useState("");
   const [useEvaluator, setUseEvaluator] = useState(false);
-  const [evaluatorModel, setEvaluatorModel] = useState<ModelId>(supportedModels[0].id);
+  const [evaluatorSelectionValue, setEvaluatorSelectionValue] = useState("");
+  const [selectionInitialized, setSelectionInitialized] = useState(false);
   const [evaluatorThreshold, setEvaluatorThreshold] = useState(70);
   const [evaluatorPrompt, setEvaluatorPrompt] = useState(defaultEvaluatorPrompt);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -36,19 +39,36 @@ export function NewExperimentPage() {
   }, []);
 
   useEffect(() => {
-    if (models.some((item) => item.id === baselineModel && item.health === "unavailable")) setBaselineModel(defaultModel);
-    if (models.some((item) => item.id === candidateModel && item.health === "unavailable")) setCandidateModel(defaultModel);
-    if (models.some((item) => item.id === evaluatorModel && item.health === "unavailable")) setEvaluatorModel(defaultModel);
-  }, [models, defaultModel, baselineModel, candidateModel, evaluatorModel]);
+    const encodedOptions = options.map((option) => encodeModelSelection({ modelId: option.modelId, provider: option.provider, source: option.source, ...(option.connectionId ? { connectionId: option.connectionId } : {}) }));
+    if (!selectionInitialized && !catalogLoading && encodedOptions.length) {
+      setBaselineSelectionValue(encodedOptions[0]);
+      setCandidateSelectionValue(encodedOptions[0]);
+      setEvaluatorSelectionValue(encodedOptions[0]);
+      setSelectionInitialized(true);
+      return;
+    }
+    if (selectionInitialized) {
+      if (baselineSelectionValue && !encodedOptions.includes(baselineSelectionValue)) setBaselineSelectionValue("");
+      if (candidateSelectionValue && !encodedOptions.includes(candidateSelectionValue)) setCandidateSelectionValue("");
+      if (evaluatorSelectionValue && !encodedOptions.includes(evaluatorSelectionValue)) setEvaluatorSelectionValue("");
+    }
+  }, [options, catalogLoading, selectionInitialized, baselineSelectionValue, candidateSelectionValue, evaluatorSelectionValue]);
 
   const selectedDataset = datasets.find((dataset) => dataset.id === datasetId) ?? null;
   const stepValid = (index: number): boolean => {
     if (index === 0) return name.trim().length > 0 && datasetId.length > 0;
-    if (index === 1) return baselinePrompt.trim().length > 0 && candidatePrompt.trim().length > 0;
+    if (index === 1) return baselinePrompt.trim().length > 0 && candidatePrompt.trim().length > 0 && Boolean(decodeModelSelection(baselineSelectionValue)) && Boolean(decodeModelSelection(candidateSelectionValue)) && (!useEvaluator || Boolean(decodeModelSelection(evaluatorSelectionValue)));
     return true;
   };
 
   async function run() {
+    const baselineSelection = decodeModelSelection(baselineSelectionValue);
+    const candidateSelection = decodeModelSelection(candidateSelectionValue);
+    const evaluatorSelection = useEvaluator ? decodeModelSelection(evaluatorSelectionValue) : null;
+    if (!baselineSelection || !candidateSelection || (useEvaluator && !evaluatorSelection)) {
+      setError("Select an available model and provider connection for each configuration.");
+      return;
+    }
     setIsSubmitting(true);
     setError(null);
     try {
@@ -57,10 +77,13 @@ export function NewExperimentPage() {
         hypothesis: hypothesis || undefined,
         datasetId,
         baselinePrompt,
-        baselineModel,
+        baselineModel: baselineSelection.modelId,
+        baselineSelection,
         candidatePrompt,
-        candidateModel,
-        evaluatorModel: useEvaluator ? evaluatorModel : undefined,
+        candidateModel: candidateSelection.modelId,
+        candidateSelection,
+        evaluatorModel: evaluatorSelection?.modelId,
+        evaluatorSelection: evaluatorSelection ?? undefined,
         evaluatorThreshold: useEvaluator ? evaluatorThreshold : undefined,
         evaluatorPrompt: useEvaluator ? evaluatorPrompt : undefined,
       });
@@ -132,11 +155,14 @@ export function NewExperimentPage() {
             <label>Prompt
               <textarea value={baselinePrompt} onChange={(event) => setBaselinePrompt(event.target.value)} rows={9} />
             </label>
-            <label>Model
-              <select value={baselineModel} onChange={(event) => setBaselineModel(event.target.value as ModelId)}>
-                {models.map((item) => <option key={item.id} value={item.id} disabled={item.health === "unavailable"}>{modelOptionLabel(item)}</option>)}
-              </select>
-            </label>
+            <ModelSelector
+              label="Model"
+              value={baselineSelectionValue}
+              onChange={setBaselineSelectionValue}
+              options={options}
+              loading={catalogLoading}
+              className="model-selector"
+            />
           </section>
 
           <section className="panel prompt-editor config-block candidate-block">
@@ -147,11 +173,14 @@ export function NewExperimentPage() {
             <label>Prompt
               <textarea value={candidatePrompt} onChange={(event) => setCandidatePrompt(event.target.value)} rows={9} />
             </label>
-            <label>Model
-              <select value={candidateModel} onChange={(event) => setCandidateModel(event.target.value as ModelId)}>
-                {models.map((item) => <option key={item.id} value={item.id} disabled={item.health === "unavailable"}>{modelOptionLabel(item)}</option>)}
-              </select>
-            </label>
+            <ModelSelector
+              label="Model"
+              value={candidateSelectionValue}
+              onChange={setCandidateSelectionValue}
+              options={options}
+              loading={catalogLoading}
+              className="model-selector"
+            />
           </section>
 
           <section className="panel judge-settings" style={{ gridColumn: "1 / -1" }}>
@@ -169,11 +198,14 @@ export function NewExperimentPage() {
             </div>
             {useEvaluator && (
               <div className="judge-settings-inner">
-                <label>Judge model
-                  <select value={evaluatorModel} onChange={(event) => setEvaluatorModel(event.target.value as ModelId)}>
-                    {models.map((item) => <option key={item.id} value={item.id} disabled={item.health === "unavailable"}>{modelOptionLabel(item)}</option>)}
-                  </select>
-                </label>
+                <ModelSelector
+                  label="Judge model"
+                  value={evaluatorSelectionValue}
+                  onChange={setEvaluatorSelectionValue}
+                  options={options}
+                  loading={catalogLoading}
+                  className="model-selector"
+                />
                 <label>Pass threshold
                   <div className="threshold-row">
                     <input type="number" min={0} max={100} value={evaluatorThreshold} onChange={(event) => setEvaluatorThreshold(Math.max(0, Math.min(100, Number(event.target.value) || 0)))} />
@@ -202,9 +234,9 @@ export function NewExperimentPage() {
             <div><dt>Experiment</dt><dd>{name}</dd></div>
             <div><dt>Hypothesis</dt><dd>{hypothesis || "—"}</dd></div>
             <div><dt>Dataset</dt><dd>{selectedDataset ? `${selectedDataset.name} (${selectedDataset.testCaseCount} scenarios)` : "—"}</dd></div>
-            <div><dt>Baseline</dt><dd>{baselineModel}</dd></div>
-            <div><dt>Candidate</dt><dd>{candidateModel}</dd></div>
-            <div><dt>Evaluator</dt><dd>{useEvaluator ? `${evaluatorModel} · threshold ${evaluatorThreshold}%` : "None (human judgement)"}</dd></div>
+            <div><dt>Baseline</dt><dd>{decodeModelSelection(baselineSelectionValue)?.modelId ?? "Not selected"}</dd></div>
+            <div><dt>Candidate</dt><dd>{decodeModelSelection(candidateSelectionValue)?.modelId ?? "Not selected"}</dd></div>
+            <div><dt>Evaluator</dt><dd>{useEvaluator ? `${decodeModelSelection(evaluatorSelectionValue)?.modelId ?? "Not selected"} · threshold ${evaluatorThreshold}%` : "None (human judgement)"}</dd></div>
           </dl>
           <div className="review-prompts">
             <div className="config-block baseline-block">
