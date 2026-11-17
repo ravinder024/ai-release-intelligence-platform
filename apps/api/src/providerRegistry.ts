@@ -156,7 +156,8 @@ export async function discoverPlatformFreeModels(apiKey = process.env.OPENROUTER
 export class ApiKeyModelProvider implements ModelProvider {
   constructor(private readonly provider: ApiProvider, private readonly apiKey: string) {}
 
-  async execute({ model, prompt, input }: { model: string; prompt: string; input: string }): Promise<ProviderResult> {
+  async execute({ model, prompt, input, maxTokens }: { model: string; prompt: string; input: string; maxTokens?: number }): Promise<ProviderResult> {
+    const maxTokensValue = Math.max(1, Math.round(maxTokens ?? 2048));
     const describe = (status: number, data: any): string => {
       const detail = typeof data?.error?.message === "string"
         ? data.error.message
@@ -169,7 +170,7 @@ export class ApiKeyModelProvider implements ModelProvider {
         const { status, data } = await postJson(`${endpoints.anthropic.baseUrl}/messages`, () => ({
           method: "POST",
           headers: { "x-api-key": this.apiKey, "anthropic-version": "2023-06-01", "content-type": "application/json" },
-          body: JSON.stringify({ model, max_tokens: 2048, system: prompt, messages: [{ role: "user", content: input }] }),
+          body: JSON.stringify({ model, max_tokens: maxTokensValue, system: prompt, messages: [{ role: "user", content: input }] }),
           signal: AbortSignal.timeout(60_000),
         }));
         if (status < 200 || status >= 300) throw new Error(describe(status, data));
@@ -185,7 +186,7 @@ export class ApiKeyModelProvider implements ModelProvider {
       const { status, data } = await postJson(`${baseUrl}/chat/completions`, () => ({
         method: "POST",
         headers: { ...bearer(this.apiKey), "content-type": "application/json" },
-        body: JSON.stringify({ model, messages: [{ role: "system", content: prompt }, { role: "user", content: input }], max_tokens: 2048 }),
+        body: JSON.stringify({ model, messages: [{ role: "system", content: prompt }, { role: "user", content: input }], max_tokens: maxTokensValue }),
         signal: AbortSignal.timeout(60_000),
       }));
       if (status < 200 || status >= 300) throw new Error(describe(status, data));

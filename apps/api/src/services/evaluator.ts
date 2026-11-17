@@ -8,6 +8,13 @@ import { withProviderSlot } from "./providerLimiter.js";
  */
 const JUDGE_TIMEOUT_MS = Math.max(5_000, Number(process.env.JUDGE_TIMEOUT_MS ?? 45_000));
 
+/**
+ * Reasoning judges (e.g. deepseek-r1) spend most of their completion budget on hidden reasoning,
+ * so a small cap cut the JSON off mid-object and every judgement failed with "could not extract
+ * JSON". The judge therefore gets a much larger budget than a normal prompt call.
+ */
+const JUDGE_MAX_TOKENS = Math.max(512, Number(process.env.JUDGE_MAX_TOKENS ?? 4096));
+
 export type JudgementCriterion = {
   criterion: string;
   score: number;
@@ -78,11 +85,30 @@ Expected output: ${expectedOutput}` : "";
 
 function normalizeJson(raw: string): string {
   const start = raw.indexOf("{");
+  if (start === -1) throw new Error("Could not extract JSON from evaluator response.");
   const end = raw.lastIndexOf("}");
-  if (start === -1 || end === -1 || end <= start) {
-    throw new Error("Could not extract JSON from evaluator response.");
-  }
-  return raw.slice(start, end + 1);
+  // A truncated answer (very common with reasoning judges) has no closing brace; keep the tail so
+  // the salvor below can still read the fields that did arrive.
+  return end > start ? raw.slice(start, end + 1) : raw.slice(start);
+}
+
+/**
+ * Last-resort extraction for truncated or slightly malformed judge output.
+ *
+ * A judge that answered `{"overallScore": 95, "pass": true, "summary": "…` has produced a usable
+ * verdict; throwing that away turned one truncated token into a "partial failure" run.
+ */
+function salvageJudgement(text: string): Record<string, unknown> {
+  const score = /"overallScore"\s*:\s*(-?\d+(?:\.\d+)?)/.exec(text);
+  const pass = /"pass"\s*:\s*(true|false)/.exec(text);
+  const summary = /"summary"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(text);
+  if (!score && !pass) throw new Error("Could not extract JSON from evaluator response.");
+  return {
+    overallScore: score ? Number(score[1]) : undefined,
+    pass: pass ? pass[1] === "true" : undefined,
+    summary: summary ? summary[1].replace(/\\"/g, '"').replace(/\\n/g, " ") : null,
+    criteriaResults: [],
+  };
 }
 
 function safeJsonParse(text: string): any {
@@ -99,12 +125,17 @@ function safeJsonParse(text: string): any {
 
 function parseJudgement(raw: string, thresholdHint: number | null = null): Omit<JudgementResult, "evaluatorModel"> {
   const text = normalizeJson(raw);
-  const parsed = safeJsonParse(text) as Partial<{
+  let parsed: Partial<{
     overallScore: number;
     pass: boolean;
     summary: string | null;
     criteriaResults: Array<Partial<{ criterion: string; score: number; pass: boolean; reason: string | null }>>;
   }>;
+  try {
+    parsed = safeJsonParse(text);
+  } catch {
+    parsed = salvageJudgement(text) as typeof parsed;
+  }
 
   // Derive overallScore if missing but criteria exist
   let overallScore: number | null = null;
@@ -167,7 +198,7 @@ export async function judgeResult(args: JudgeResultArgs): Promise<JudgementResul
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
       const result = await withProviderSlot(() => withTimeout(
-        provider.execute({ model: args.evaluatorModel, prompt: messages.prompt, input: messages.input }),
+        provider.execute({ model: args.evaluatorModel, prompt: messages.prompt, input: messages.input, maxTokens: JUDGE_MAX_TOKENS }),
         JUDGE_TIMEOUT_MS,
         `The judge did not answer within ${Math.round(JUDGE_TIMEOUT_MS / 1000)}s.`,
       ));

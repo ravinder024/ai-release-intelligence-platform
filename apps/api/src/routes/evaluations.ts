@@ -552,11 +552,15 @@ export async function executeRun({
   ]);
 
   let anyFailed = false;
+  let skipped = 0;
 
   try {
     await mapWithConcurrency(jobs, CONCURRENCY, async (job) => {
       // cooperative cancellation: stop processing further jobs if this execution was stopped
-      if (isStopped(runId, epoch)) return;
+      if (isStopped(runId, epoch)) {
+        skipped += 1;
+        return;
+      }
       try {
         const prompt = job.variant === "A" ? promptA : promptB;
         const variantModel = job.variant === "A" ? modelA ?? model : modelB ?? model;
@@ -648,8 +652,13 @@ export async function executeRun({
             ...((evaluatorProvider ?? provider)
               ? {
                   provider: {
-                    execute: async (opts: { model: string; prompt: string; input: string }) => {
-                      const modelResult = await (evaluatorProvider ?? provider)!.execute({ model: opts.model, prompt: opts.prompt, input: opts.input });
+                    execute: async (opts: { model: string; prompt: string; input: string; maxTokens?: number }) => {
+                      const modelResult = await (evaluatorProvider ?? provider)!.execute({
+                        model: opts.model,
+                        prompt: opts.prompt,
+                        input: opts.input,
+                        ...(opts.maxTokens ? { maxTokens: opts.maxTokens } : {}),
+                      });
                       return { output: modelResult.output };
                     },
                   },
@@ -715,6 +724,13 @@ export async function executeRun({
   } finally {
     const cancelled = isStopped(runId, epoch);
     const finalStatus = anyFailed || cancelled ? "partial_failure" : "completed";
+    // Concise operational breadcrumb: makes "why did this run stop early?" answerable from logs.
+    console.log(
+      `[evaluations] run ${runId} -> ${finalStatus} jobs=${jobs.length} skipped=${skipped} cancelled=${cancelled} anyFailed=${anyFailed} owner=${runExecutionEpoch.get(runId) === epoch} epoch=${epoch} stopEpoch=${runStopEpoch.get(runId) ?? 0}`,
+    );
+    console.log(
+      `[evaluations] run ${runId} finished status=${finalStatus} jobs=${jobs.length} skipped=${skipped} cancelled=${cancelled} anyFailed=${anyFailed} owner=${runExecutionEpoch.get(runId) === epoch} stopEpoch=${runStopEpoch.get(runId) ?? 0} epoch=${epoch}`,
+    );
     // The credit belongs to this execution, so it always settles, even if a resume took over.
     if (reservationId) {
       await settlePlatformCredit(reservationId, finalStatus === "completed").catch((error) => console.error("Could not settle evaluation credit:", error));

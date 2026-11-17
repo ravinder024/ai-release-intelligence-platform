@@ -8,7 +8,7 @@ export type ProviderResult = {
 };
 
 export interface ModelProvider {
-  execute(args: { model: string; prompt: string; input: string }): Promise<ProviderResult>;
+  execute(args: { model: string; prompt: string; input: string; maxTokens?: number }): Promise<ProviderResult>;
 }
 
 const MAX_RETRIES = 3;
