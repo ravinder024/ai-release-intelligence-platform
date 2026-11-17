@@ -251,6 +251,41 @@ async function main() {
     check("resume while running 409", (await request(base, sessionA, `/api/evaluations/${finishedRun.id}/resume`, "POST", {})).status, 409);
     await prisma.evaluationRun.delete({ where: { id: finishedRun.id } });
 
+    // -- duplicate-run guard: a second run of the same dataset must be refused, not queued
+    const activeRun = await prisma.evaluationRun.create({
+      data: {
+        datasetId: resumeDataset.id,
+        model: "nvidia/nemotron-3.5-lightning:free",
+        promptA: "a",
+        promptB: "b",
+        status: "running",
+        userId,
+      },
+    });
+    const duplicateCreate = await request(base, sessionA, "/api/evaluations", "POST", {
+      datasetId: resumeDataset.id,
+      model: "nvidia/nemotron-3.5-lightning:free",
+      promptA: "a",
+      promptB: "b",
+    });
+    check("second run on the same dataset 409", duplicateCreate.status, 409);
+    check("duplicate-run error code", (duplicateCreate.data as { code?: string }).code, "RUN_IN_PROGRESS");
+    // Restarting an older, finished run must also refuse while another run is still executing —
+    // that is what produced a dozen overlapping runs in production.
+    const olderRun = await prisma.evaluationRun.create({
+      data: {
+        datasetId: resumeDataset.id,
+        model: "nvidia/nemotron-3.5-lightning:free",
+        promptA: "a",
+        promptB: "b",
+        status: "partial_failure",
+        userId,
+      },
+    });
+    const restartBlocked = await request(base, sessionA, `/api/evaluations/${olderRun.id}/restart`, "POST", {});
+    check("restart while another run is active 409", restartBlocked.status, 409);
+    await prisma.evaluationRun.deleteMany({ where: { id: { in: [activeRun.id, olderRun.id] } } });
+
     // -- polling must not be throttled: the results page polls continuously during a run
     const pollStatuses: number[] = [];
     for (let index = 0; index < 40; index += 1) {

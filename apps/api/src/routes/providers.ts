@@ -16,7 +16,9 @@ const updateSchema = z.object({ label: labelSchema.optional(), apiKey: keySchema
 
 export const providersRouter = Router();
 // Scoped on purpose (see authRouter): this limiter must not count evaluation polling requests.
-const providerLimit = rateLimit({ name: "provider-connections", windowMs: 60_000, max: 30 });
+// Generous enough that normal navigation (key cards + model refresh) never trips it; the limiter
+// exists to stop abuse, not to throttle ordinary product use.
+const providerLimit = rateLimit({ name: "provider-connections", windowMs: 60_000, max: 120 });
 providersRouter.use((request, response, next) => {
   const isProviderPath = request.path.startsWith("/provider-connections") || request.path === "/model-catalog";
   if (!isProviderPath) return next();

@@ -1,4 +1,5 @@
 import { estimateCost, getModelProvider, type ModelProvider } from "../provider.js";
+import { withProviderSlot } from "./providerLimiter.js";
 
 let provider: ModelProvider | null = null;
 
@@ -33,7 +34,8 @@ export async function runModel(
   const provider = providerOverride ?? getProvider();
   const startedAt = performance.now();
   try {
-    const result = await provider.execute({ model, prompt, input });
+    // One global pool for every model call keeps overlapping runs from tripping provider 429s.
+    const result = await withProviderSlot(() => provider.execute({ model, prompt, input }));
     const latencyMs = Math.round(performance.now() - startedAt);
     return {
       ok: true,

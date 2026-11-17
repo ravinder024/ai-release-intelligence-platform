@@ -78,6 +78,29 @@ export function activeRunIds(): string[] {
   return [...runExecutionEpoch.keys()];
 }
 
+/**
+ * Only one evaluation per dataset may execute at a time for a given account.
+ *
+ * Without this guard a repeated click on Restart ("nothing happened, click again") starts a new
+ * full run each time. Production showed 13 identical runs created in 17 seconds, all hammering
+ * the same free model, which is what produced the provider rate limits and the crawling runs.
+ */
+async function findActiveRunForDataset(userId: string, datasetId: string, excludeRunId?: string) {
+  return prisma.evaluationRun.findFirst({
+    where: {
+      userId,
+      datasetId,
+      status: "running",
+      ...(excludeRunId ? { id: { not: excludeRunId } } : {}),
+    },
+    orderBy: { createdAt: "desc" },
+    select: { id: true },
+  });
+}
+
+const RUN_IN_PROGRESS_MESSAGE =
+  "Another evaluation for this dataset is still running. Stop it first, or wait for it to finish.";
+
 evaluationsRouter.post("/evaluations", evaluationWriteLimit, authRequired, async (request, response, next) => {
   let reservationId: string | undefined;
   try {
@@ -90,6 +113,11 @@ evaluationsRouter.post("/evaluations", evaluationWriteLimit, authRequired, async
     // Users may only evaluate datasets they own or the shared samples.
     if (!dataset.isSample && dataset.userId !== request.user!.id) {
       return response.status(404).json({ error: "Dataset not found" });
+    }
+
+    const activeRun = await findActiveRunForDataset(request.user!.id, dataset.id);
+    if (activeRun) {
+      return response.status(409).json({ error: RUN_IN_PROGRESS_MESSAGE, code: "RUN_IN_PROGRESS", runId: activeRun.id });
     }
 
     const selectionA = payload.modelASelection ?? payload.modelSelection;
@@ -225,6 +253,14 @@ evaluationsRouter.post("/evaluations/:id/restart", evaluationWriteLimit, authReq
     if (!dataset) return response.status(404).json({ error: "Dataset not found" });
     if (!dataset.isSample && dataset.userId !== request.user!.id) return response.status(404).json({ error: "Dataset not found" });
 
+    // Restart must never multiply work: refuse while a *different* run of this dataset is active,
+    // and stop the run being replaced so two executors never hammer the provider at once.
+    const activeRun = await findActiveRunForDataset(request.user!.id, existing.datasetId, existing.id);
+    if (activeRun) {
+      return response.status(409).json({ error: RUN_IN_PROGRESS_MESSAGE, code: "RUN_IN_PROGRESS", runId: activeRun.id });
+    }
+    await requestStop(existing.id).catch(() => undefined);
+
     const oldConfigA = providerSnapshot(existing.modelConfigA);
     const oldConfigB = providerSnapshot(existing.modelConfigB);
     const oldEvaluatorConfig = providerSnapshot(existing.evaluatorConfig);
@@ -323,6 +359,11 @@ evaluationsRouter.post("/evaluations/:id/resume", evaluationWriteLimit, authRequ
     if (!run) return response.status(404).json({ error: "Evaluation run not found" });
     if (run.userId !== request.user!.id) return response.status(404).json({ error: "Evaluation run not found" });
     if (run.status === "running") return response.status(409).json({ error: "This run is already in progress." });
+
+    const activeRun = await findActiveRunForDataset(request.user!.id, run.datasetId, run.id);
+    if (activeRun) {
+      return response.status(409).json({ error: RUN_IN_PROGRESS_MESSAGE, code: "RUN_IN_PROGRESS", runId: activeRun.id });
+    }
 
     const testCases: TestCase[] = run.dataset.testCases.map((testCase) => ({
       id: testCase.id,

@@ -145,6 +145,7 @@ Notes:
 - Only a fully **completed** run uses one of your five Platform Free evaluations. A run that fails, is stopped, or is interrupted by a restart does **not** cost a credit, and a **Resume** continues the existing run rather than starting a new one.
 - If the judge failed on some answers (for example because a free model was rate-limited), **Resume** re-scores just those answers.
 - A low judge score is a real quality finding, not a failure — those answers are not re-run.
+- **One run per dataset at a time.** While a dataset is still evaluating, starting another run (or clicking Restart again) answers "Another evaluation for this dataset is still running." Use **Stop** first if you want to start over. This keeps a single click from turning into a dozen overlapping runs.
 
 ## Phase 3 workflow: automated judging and review
 

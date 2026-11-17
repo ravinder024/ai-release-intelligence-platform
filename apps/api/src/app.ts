@@ -111,10 +111,17 @@ export function createApp() {
   // Serve the built web app so the whole product runs on one port (default 5101)
   const webDist = resolve(currentDirectory, "../../web/dist");
   if (existsSync(webDist)) {
-    app.use(express.static(webDist));
+    // Hashed assets are immutable; index.html must always revalidate so a deploy is picked up
+    // immediately instead of leaving a browser on a stale bundle (old buttons, old behaviour).
+    app.use(express.static(webDist, {
+      setHeaders: (response, filePath) => {
+        if (filePath.endsWith(".html")) response.setHeader("Cache-Control", "no-cache, must-revalidate");
+      },
+    }));
     // SPA fallback: serve index.html for any non-API GET route
     app.use((request, response, next) => {
       if (request.method !== "GET" || request.path.startsWith("/api") || request.path === "/health") return next();
+      response.setHeader("Cache-Control", "no-cache, must-revalidate");
       response.sendFile(resolve(webDist, "index.html"));
     });
   }

@@ -1,4 +1,12 @@
 import { getModelProvider } from "../provider.js";
+import { withProviderSlot } from "./providerLimiter.js";
+
+/**
+ * A judge call must never hang forever: a stalled request would keep its evaluation run in
+ * `running` indefinitely and the user would see a progress bar that never moves. Every attempt
+ * is capped, so a slow judge degrades into a failed judgement that Resume can re-score.
+ */
+const JUDGE_TIMEOUT_MS = Math.max(5_000, Number(process.env.JUDGE_TIMEOUT_MS ?? 45_000));
 
 export type JudgementCriterion = {
   criterion: string;
@@ -139,6 +147,17 @@ function parseJudgement(raw: string, thresholdHint: number | null = null): Omit<
   };
 }
 
+/** Reject when `promise` has not settled within `timeoutMs` (the work itself is left to finish). */
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+  });
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timer) clearTimeout(timer);
+  }) as Promise<T>;
+}
+
 export async function judgeResult(args: JudgeResultArgs): Promise<JudgementResult> {
   const provider = args.provider ?? getModelProvider();
   let messages = buildMessages(args);
@@ -147,7 +166,11 @@ export async function judgeResult(args: JudgeResultArgs): Promise<JudgementResul
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
-      const result = await provider.execute({ model: args.evaluatorModel, prompt: messages.prompt, input: messages.input });
+      const result = await withProviderSlot(() => withTimeout(
+        provider.execute({ model: args.evaluatorModel, prompt: messages.prompt, input: messages.input }),
+        JUDGE_TIMEOUT_MS,
+        `The judge did not answer within ${Math.round(JUDGE_TIMEOUT_MS / 1000)}s.`,
+      ));
       rawOutput = result.output ?? "";
       const parsed = parseJudgement(rawOutput, args.threshold ?? null);
       const pass = args.threshold !== null && args.threshold !== undefined ? parsed.overallScore >= args.threshold : parsed.pass;

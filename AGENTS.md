@@ -124,6 +124,16 @@ Management thinking, not just software engineering.
   reopening the existing credit with `reservePlatformCreditForRun`) and `.../restart`
   (brand-new run). The results page polls every 3s and reports answers received as well as
   answers judged.
+- **One run at a time per dataset:** `POST /api/evaluations` and `.../restart` answer 409
+  `RUN_IN_PROGRESS` while another run of the same dataset is still executing, and restart
+  cooperatively stops the run it replaces. Repeated Restart clicks used to create a dozen
+  identical runs, which is what triggered the provider rate limits and the frozen progress bars.
+- **Provider governor:** every outbound model *and* judge call takes a slot from one global pool
+  (`services/providerLimiter.ts`, `PROVIDER_MAX_CONCURRENCY`, default 4), and judge calls are
+  hard-capped (`JUDGE_TIMEOUT_MS`, default 45s) so a stalled judge can never leave a run
+  `running` forever.
+- **Cache headers:** `index.html` is served `no-cache` so a deploy is picked up immediately;
+  hashed bundles stay cacheable.
 - **Rate limiting pitfall:** routers are all mounted on `/api`, and a router-level
   `use(rateLimit(...))` runs for *every* `/api` request, so the smallest limit becomes a
   global ceiling. Limiters must be path-scoped (`auth`, `provider-connections`) or bound to
