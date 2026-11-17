@@ -1,6 +1,7 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "../prisma.js";
 import { isConfiguredTester } from "../testerBootstrap.js";
+import { FREE_SCENARIO_LIMIT } from "@prompt-playground/shared";
 
 export const PLATFORM_FREE_EVALUATION_LIMIT = 5;
 const UNMETERED_RESERVATION_ID = "__unmetered__";
@@ -17,6 +18,12 @@ function hasFullAccess(identity: { role: string; username: string | null } | nul
   return identity.role === "admin"
     || isConfiguredTester(identity.username)
     || Boolean(identity.username && fullAccessUsernames().has(identity.username.trim().toLowerCase()));
+}
+
+/** True when an account is exempt from the platform-funded allowance (Admin, Tester, allowlist). */
+export async function hasUnlimitedAccess(userId: string): Promise<boolean> {
+  const user = await prisma.user.findUnique({ where: { id: userId }, select: { role: true, username: true } });
+  return hasFullAccess(user);
 }
 
 export class FreeEvaluationLimitError extends Error {
@@ -88,6 +95,51 @@ export async function releasePlatformCredit(reservationId: string): Promise<void
   await settlePlatformCredit(reservationId, false);
 }
 
+/**
+ * Settles reservations that nobody will ever settle again.
+ *
+ * `executeRun` releases a reservation in its `finally` block, but that block cannot run when the
+ * process dies mid-run (deploy, crash). The run is then swept to `partial_failure` and the
+ * reservation would stay `reserved` forever, silently eating one of the user's five evaluations.
+ * Reservations created just before a run row exists can be orphaned the same way.
+ *
+ * Only runs that are no longer `running` are considered, so an in-flight run is never touched.
+ */
+export async function releaseOrphanedReservations(
+  inFlightRunIds: string[] = [],
+  graceMs = 10 * 60 * 1000,
+): Promise<{ consumed: number; released: number }> {
+  if (!process.env.DATABASE_URL) return { consumed: 0, released: 0 };
+  const notInFlight = inFlightRunIds.length > 0 ? { notIn: inFlightRunIds } : {};
+  // A finished run that still holds a `reserved` credit counts as used.
+  const consumed = await prisma.evaluationCreditReservation.updateMany({
+    where: {
+      status: "reserved",
+      runId: { not: null, ...notInFlight },
+      run: { status: "completed", ...(inFlightRunIds.length > 0 ? { id: { notIn: inFlightRunIds } } : {}) },
+    },
+    data: { status: "consumed" },
+  });
+  // Anything else that is no longer running — swept, stopped, or never attached — is given back.
+  const released = await prisma.evaluationCreditReservation.updateMany({
+    where: {
+      status: "reserved",
+      OR: [
+        {
+          runId: { not: null, ...notInFlight },
+          run: { status: { not: "running" }, ...(inFlightRunIds.length > 0 ? { id: { notIn: inFlightRunIds } } : {}) },
+        },
+        { runId: null, createdAt: { lt: new Date(Date.now() - graceMs) } },
+      ],
+    },
+    data: { status: "released" },
+  });
+  if (consumed.count > 0 || released.count > 0) {
+    console.log(`Reconciled platform credits: ${consumed.count} consumed, ${released.count} released.`);
+  }
+  return { consumed: consumed.count, released: released.count };
+}
+
 export async function getUsageSummary(userId: string) {
   const [user, used, pending] = await Promise.all([
     prisma.user.findUnique({ where: { id: userId }, select: { role: true, username: true, providerConnections: { select: { id: true } } } }),
@@ -103,6 +155,7 @@ export async function getUsageSummary(userId: string) {
     remaining: unlimited ? null : remaining,
     unlimited,
     byokConfigured: Boolean(user?.providerConnections.length),
+    scenarioLimit: unlimited ? null : FREE_SCENARIO_LIMIT,
     platformCreditsAvailable: unlimited || remaining > 0,
   };
 }

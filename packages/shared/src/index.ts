@@ -487,3 +487,6 @@ export function criterionDescription(name: string): string | null {
   const match = Object.keys(CRITERION_DESCRIPTIONS).find((key) => key.toLowerCase() === name.toLowerCase());
   return match ? CRITERION_DESCRIPTIONS[match] : null;
 }
+
+/** Standard accounts may keep at most this many scenarios in a dataset (and run experiments on). */
+export const FREE_SCENARIO_LIMIT = 30;

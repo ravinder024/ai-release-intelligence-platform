@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { type ExperimentDetail } from "@prompt-playground/shared";
 import { createIteration, getExperiment } from "../api";
 import { ModelSelector } from "../components/ModelSelector";
+import { HelpTooltip } from "../components/HelpTooltip";
 import { decodeModelSelection, encodeModelSelection } from "../components/ModelSelector";
 import { useProviderModels } from "../useModels";
 
@@ -158,6 +159,9 @@ export function NewIterationPage() {
                 <div className="threshold-row">
                   <input type="number" min={0} max={100} value={evaluatorThreshold} onChange={(event) => setEvaluatorThreshold(Math.max(0, Math.min(100, Number(event.target.value) || 0)))} />
                   <span className="percent">%</span>
+                  <HelpTooltip label="About the pass threshold">
+                    A result passes when the judge's overall score is at least this percentage (0–100).
+                  </HelpTooltip>
                 </div>
               </label>
               <label>Judge prompt

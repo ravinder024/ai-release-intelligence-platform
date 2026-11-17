@@ -398,9 +398,49 @@ async function run() {
     const orphanRun = await prisma.evaluationRun.create({
       data: { datasetId: dataset.id, model: BASELINE_MODEL, promptA: "a", promptB: "b", status: "running" },
     });
+    // A crashed process never settles its reservation; the sweep must give the credit back.
+    const orphanUser = await prisma.user.create({
+      data: { email: `credit_orphan_${Date.now()}@example.com`, displayName: "Credit Orphan", username: `creditorphan${Date.now()}` },
+    });
+    const orphanReservation = await prisma.evaluationCreditReservation.create({
+      data: { userId: orphanUser.id, runId: orphanRun.id, reason: "evaluation", amount: 1 },
+    });
     await recoverStaleRuns();
     const orphanAfter = await prisma.evaluationRun.findUnique({ where: { id: orphanRun.id }, select: { status: true } });
     check("K4. orphaned running run is recovered", orphanAfter?.status, "partial_failure");
+    const releasedReservation = await prisma.evaluationCreditReservation.findUnique({ where: { id: orphanReservation.id }, select: { status: true } });
+    check("K5. orphaned run does not consume a platform credit", releasedReservation?.status, "released");
+
+    // A partial (failing) run must also give the credit back, not spend it.
+    const failingExperiment = await prisma.experiment.create({
+      data: {
+        name: "Partial Credit Test",
+        hypothesis: null,
+        datasetId: dataset.id,
+        baselinePrompt: "Fails",
+        baselineModel: BASELINE_MODEL,
+        candidatePrompt: "Fails",
+        candidateModel: CANDIDATE_MODEL,
+        evaluatorModel: null,
+        status: "draft",
+      },
+    });
+    const failingReservation = await prisma.evaluationCreditReservation.create({
+      data: { userId: orphanUser.id, reason: "experiment", amount: 1 },
+    });
+    const failingProvider: ModelProvider = {
+      async execute() {
+        throw new Error("simulated provider failure");
+      },
+    };
+    await startExperimentRun(failingExperiment.id, { provider: failingProvider, awaitRun: true, reservationId: failingReservation.id });
+    const failingRun = await prisma.evaluationRun.findFirst({ where: { experimentId: failingExperiment.id }, select: { status: true } });
+    const failingCredit = await prisma.evaluationCreditReservation.findUnique({ where: { id: failingReservation.id }, select: { status: true } });
+    check("K6. failed run is recorded as partial", failingRun?.status, "partial_failure");
+    check("K7. failed run does not consume a platform credit", failingCredit?.status, "released");
+    await prisma.experiment.deleteMany({ where: { id: failingExperiment.id } }).catch(() => undefined);
+    await prisma.evaluationCreditReservation.deleteMany({ where: { userId: orphanUser.id } }).catch(() => undefined);
+    await prisma.user.deleteMany({ where: { id: orphanUser.id } }).catch(() => undefined);
     await prisma.evaluationRun.deleteMany({ where: { id: orphanRun.id } }).catch(() => undefined);
 
     // Clean up extra experiments created for retry/iteration tests

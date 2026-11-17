@@ -29,7 +29,7 @@ Signing in returns you to Home. From there the top navigation is the fastest way
 | --- | --- | --- |
 | **Home** | `/` — product overview and About | No |
 | **Playground** | `/playground` — compare two prompts on one input | Yes |
-| **Datasets** | `/datasets` — sample datasets for everyone; your own are private | Sample data: no |
+| **Datasets** | `/datasets` — shared sample datasets and your private datasets | Yes |
 | **Experiments** | `/experiments` — baseline vs candidate with judging | Yes |
 | **Manual** | `/manual` — this document | No |
 
@@ -56,11 +56,12 @@ The whole product runs on a single port (`5101`). The API server also serves the
 - **Forgot your password?** Use **Forgot password?** on the sign-in page. Enter your email to receive an in-app reset code, then set a new password with that code. All existing sessions are signed out after a reset.
 - **Change your password:** **Settings → Security**. Signing out everywhere else happens automatically.
 - **Platform Free evaluations:** standard accounts receive five complete platform-funded runs. Admin, the configured Tester, and any username listed in `FULL_ACCESS_USERNAMES` have unlimited access. A run can cover many scenarios; it counts as one evaluation. Invalid requests and incomplete/failed runs do not consume a credit.
+- **Scenario limit for standard accounts:** you can keep up to **30 scenarios** in a dataset, and you can run experiments on datasets of up to 30 scenarios. Admin, Tester, and `FULL_ACCESS_USERNAMES` accounts have no cap. Adding scenario 31 is rejected with a clear message; nothing is deleted for you.
 - **Checking your usage:** **Settings → Usage & plan** shows how many Platform Free evaluations you have left, how many are in progress, and — for unlimited accounts — the word **Unlimited** instead of a number.
 - **Your API keys (BYOK):** optional. Go to **Settings → API keys**, pick a provider, give the key a **label**, and save it. You can add **several keys per provider** (for example `Personal` and `Work`) and each one is a separate selectable option. Each saved key appears as its own card where you can rename it, replace the key, reload its model list, or remove it.
 - **Providers:** OpenAI, Anthropic, Google Gemini, DeepSeek, and OpenRouter.
 - **Free models only on Platform Free:** Platform Free models are discovered dynamically from OpenRouter's free catalog and use the platform account. BYOK models are discovered from your own key.
-- **Private workspace:** your datasets, evaluations, and experiments are visible only to you. The two sample datasets (Customer Support, Travel - Flights) are shared and read-only for everyone.
+- **Private workspace:** sign-in is required for every workspace, including sample datasets. Your datasets, evaluations, and experiments are visible only to you. The two sample datasets (Customer Support, Travel - Flights) are shared and read-only after sign-in.
 - **Sign out:** use **Settings → Sign out** or the top-right menu.
 
 ## Phase 1 workflow: prompt comparison
@@ -81,6 +82,8 @@ When you want to compare two prompt variants on one example:
 | **Stop run** | While the run is in progress | Ends the run and keeps whatever already finished. The run becomes **Interrupted**. |
 | **Retry** | On an interrupted or partially failed run | Starts a **new comparison** with the same model, input, and prompts. The old run stays in the history. |
 | **Discard** | On any finished run | Deletes the run and its responses. This cannot be undone. |
+
+> Playground comparisons are not metered: they never consume one of your five Platform Free evaluations, even though they run on Platform Free models.
 
 The same controls appear on each row of **Recent runs**, so you can clean up or retry directly from the list.
 
@@ -246,6 +249,7 @@ Notes:
 
 - **Resume** is also the tool for rate limits. If scenarios failed because a model was rate-limited, open the "Evaluation status" panel, switch the Baseline / Candidate / Judge model to a different one, then resume — the finished results stay untouched.
 - **Restart** consumes one platform-funded evaluation credit (same as a first run); **Resume** continues the existing run and does not.
+- Only a **fully completed** run uses a credit. A run that fails, is stopped, or is interrupted by a server restart is reconciled automatically and the credit is returned — including runs interrupted by a deployment.
 - A low judge score is a **quality** failure, not an execution failure. Those results are already complete, so they are never re-run by Resume — that is a real finding, not an error.
 - Progress updates every few seconds on its own, including after a Resume.
 

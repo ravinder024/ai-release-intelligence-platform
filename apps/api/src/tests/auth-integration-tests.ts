@@ -67,6 +67,7 @@ async function main() {
 
     // -- me (authed + anonymous)
     const me = await request(base, sessionA, "/api/auth/me");
+    const userId = (me.data as { id: string }).id;
     check("me email", (me.data as { email?: string }).email, emailA.toLowerCase());
     const anon = await request(base, { cookie: "" }, "/api/auth/me");
     check("me anonymous 401", anon.status, 401);
@@ -112,10 +113,11 @@ async function main() {
     const datasetA = created.data as { id: string };
     check("created dataset editable", (datasetA as unknown as { editable?: boolean }).editable, true);
 
-    // anonymous list: only samples (no user datasets)
+    // Dataset routes are not available until sign-in (Home and account routes remain public).
     const anonDatasets = await request(base, { cookie: "" }, "/api/datasets");
-    const anonList = (anonDatasets.data as Array<{ isSample?: boolean; editable?: boolean }>) ?? [];
-    check("anonymous sees only samples", anonList.every((d) => d.isSample), true);
+    check("anonymous dataset tab API requires login", anonDatasets.status, 401);
+    const anonDatasetDetail = await request(base, { cookie: "" }, `/api/datasets/${datasetA.id}`);
+    check("anonymous dataset detail requires login", anonDatasetDetail.status, 401);
 
     // user A list includes own dataset
     const myDatasets = await request(base, sessionA, "/api/datasets");
@@ -127,6 +129,26 @@ async function main() {
     check("signup B 201", signupB.status, 201);
     const otherAccess = await request(base, sessionB, `/api/datasets/${datasetA.id}`);
     check("user B cannot read A's dataset (404)", otherAccess.status, 404);
+
+    // Locally authenticated users can still see their own saved Playground runs.
+    const localHistoryRow = await prisma.promptComparison.create({
+      data: {
+        model: "local-test-model",
+        input: "A saved local comparison",
+        promptA: "Prompt A",
+        promptB: "Prompt B",
+        userId: userId,
+        status: "completed",
+      },
+    });
+    const anonHistory = await request(base, { cookie: "" }, "/api/comparisons");
+    check("anonymous comparison history requires login", anonHistory.status, 401);
+    const localHistory = await request(base, sessionA, "/api/comparisons");
+    const localRuns = (localHistory.data as Array<{ id: string }> | null) ?? [];
+    check("local account sees its own previous comparison", localRuns.some((run) => run.id === localHistoryRow.id), true);
+    const otherHistory = await request(base, sessionB, "/api/comparisons");
+    const otherRuns = (otherHistory.data as Array<{ id: string }> | null) ?? [];
+    check("another account cannot see local comparison history", otherRuns.some((run) => run.id === localHistoryRow.id), false);
 
     // user B cannot edit A's dataset (403/404)
     const otherEdit = await request(base, sessionB, `/api/datasets/${datasetA.id}`, "PATCH", { name: "hacked" });
@@ -144,12 +166,13 @@ async function main() {
     // -- evaluations: anonymous create 401
     const anonEval = await request(base, { cookie: "" }, "/api/evaluations", "POST", { datasetId: datasetA.id, model: "nvidia/nemotron-3.5-lightning:free", promptA: "a", promptB: "b" });
     check("anonymous create run 401", anonEval.status, 401);
+    check("anonymous evaluation list 401", (await request(base, { cookie: "" }, "/api/evaluations")).status, 401);
+    check("anonymous experiment list 401", (await request(base, { cookie: "" }, "/api/experiments")).status, 401);
 
     // -- the retired single-key endpoint never exposes a raw key
     const keyMetaRetired = await request(base, sessionA, "/api/auth/key");
     check("legacy key endpoint retired", keyMetaRetired.status, 410);
     check("legacy key endpoint returns no payload", JSON.stringify(keyMetaRetired.data).includes("encrypted-placeholder"), false);
-    const userId = (me.data as { id: string }).id;
     const hasKeyBefore = (me.data as { hasKey?: boolean }).hasKey;
     check("hasKey false without a connection", hasKeyBefore, false);
     const probeConnection = await prisma.providerConnection.create({
@@ -189,8 +212,21 @@ async function main() {
     const paidModel = await request(base, sessionA, "/api/evaluations", "POST", { datasetId: datasetA.id, model: "openai/gpt-5", promptA: "a", promptB: "b" });
     check("paid model rejected by API", paidModel.status, 400);
 
-    // -- manual endpoint
-    const manual = await request(base, { cookie: "" }, "/api/manual");
+    // -- free accounts are capped at 30 scenarios per dataset
+    // Seed the first 30 directly: the API is rate limited, and the limit under test is the
+    // scenario cap, not the request throttle.
+    await prisma.datasetTestCase.createMany({
+      data: Array.from({ length: 30 }, (_, index) => ({ datasetId: datasetA.id, input: `Scenario ${index + 1}`, position: index })),
+    });
+    const overLimit = await request(base, sessionA, `/api/datasets/${datasetA.id}/test-cases`, "POST", { input: "Scenario 31" });
+    check("31st scenario rejected", overLimit.status, 403);
+    check("scenario cap error code", (overLimit.data as { code?: string }).code, "SCENARIO_LIMIT_REACHED");
+    check("dataset still holds 30 scenarios", await prisma.datasetTestCase.count({ where: { datasetId: datasetA.id } }), 30);
+
+    // -- manual endpoint is protected like the other workspace tabs
+    const anonManual = await request(base, { cookie: "" }, "/api/manual");
+    check("anonymous manual requires login", anonManual.status, 401);
+    const manual = await request(base, sessionA, "/api/manual");
     check("manual 200", manual.status, 200);
     check("manual is markdown", typeof manual.data === "string" && manual.data.includes("User Manual"), true);
 

@@ -36,10 +36,14 @@ function Topbar() {
       </NavLink>
       <nav className="nav">
         <NavLink to="/" end className={({ isActive }) => (isActive ? "active" : "")}>Home</NavLink>
-        <NavLink to="/playground" className={({ isActive }) => (isActive ? "active" : "")}>Playground</NavLink>
-        <NavLink to="/datasets" className={({ isActive }) => (isActive ? "active" : "")}>Datasets</NavLink>
-        <NavLink to="/experiments" className={({ isActive }) => (isActive ? "active" : "")}>Experiments</NavLink>
-        <NavLink to="/manual" className={({ isActive }) => (isActive ? "active" : "")}>Manual</NavLink>
+        {user && (
+          <>
+            <NavLink to="/playground" className={({ isActive }) => (isActive ? "active" : "")}>Playground</NavLink>
+            <NavLink to="/datasets" className={({ isActive }) => (isActive ? "active" : "")}>Datasets</NavLink>
+            <NavLink to="/experiments" className={({ isActive }) => (isActive ? "active" : "")}>Experiments</NavLink>
+            <NavLink to="/manual" className={({ isActive }) => (isActive ? "active" : "")}>Manual</NavLink>
+          </>
+        )}
       </nav>
       <div className="topbar-right">
         {user ? (
@@ -66,9 +70,9 @@ function App() {
         <Route path="/auth/login" element={<LoginPage />} />
         <Route path="/auth/signup" element={<SignupPage />} />
         <Route path="/auth/forgot-password" element={<ForgotPasswordPage />} />
-        <Route path="/datasets" element={<DatasetsPage />} />
-        <Route path="/datasets/:id" element={<DatasetDetailPage />} />
-        <Route path="/manual" element={<ManualPage />} />
+        <Route path="/datasets" element={<RequireAuth><DatasetsPage /></RequireAuth>} />
+        <Route path="/datasets/:id" element={<RequireAuth><DatasetDetailPage /></RequireAuth>} />
+        <Route path="/manual" element={<RequireAuth><ManualPage /></RequireAuth>} />
         <Route path="/" element={<HomePage />} />
         <Route path="/playground" element={<RequireAuth><PlaygroundPage /></RequireAuth>} />
         <Route path="/datasets/:id/evaluate" element={<RequireAuth><RunEvaluationPage /></RequireAuth>} />

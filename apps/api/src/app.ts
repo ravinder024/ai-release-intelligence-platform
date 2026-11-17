@@ -12,8 +12,10 @@ import { modelsRouter } from "./routes/models.js";
 import { experimentsRouter } from "./routes/experiments.js";
 import { authRouter } from "./routes/auth.js";
 import { providersRouter } from "./routes/providers.js";
-import { adminRequired } from "./auth.js";
+import { adminRequired, authRequired } from "./auth.js";
 import { FreeEvaluationLimitError } from "./services/usage.js";
+import { releaseOrphanedReservations } from "./services/usage.js";
+import { ScenarioLimitError } from "./services/limits.js";
 import { ModelSelectionError } from "./services/modelSelection.js";
 import { recoverStaleComparisons } from "./services/comparisonRuns.js";
 import { prisma } from "./prisma.js";
@@ -37,6 +39,9 @@ export async function recoverStaleRuns(): Promise<void> {
       data: { status: "partial_failure", completedAt: new Date() },
     });
     if (result.count > 0) console.log(`Marked ${result.count} interrupted evaluation run(s) as partial_failure.`);
+    // A crashed process never reaches executeRun's finally block, so its reserved credit is
+    // settled here instead — failed/partial work must never consume one of the five evaluations.
+    await releaseOrphanedReservations(inFlight);
   } catch (error) {
     console.error("Could not recover interrupted evaluation runs:", error);
   }
@@ -71,7 +76,7 @@ export function createApp() {
   );
 
   // Serve the living User Manual so it can be rendered in-app (single source of truth).
-  app.get("/api/manual", (_request, response) => {
+  app.get("/api/manual", authRequired, (_request, response) => {
     const manualPath = resolve(currentDirectory, "../../../docs/User manual.md");
     try {
       if (!existsSync(manualPath)) return response.status(404).json({ error: "User manual not found" });
@@ -118,6 +123,7 @@ export function createApp() {
     if (error instanceof z.ZodError) return response.status(400).json({ error: "Invalid request", details: error.flatten() });
     if (error instanceof ModelSelectionError) return response.status(400).json({ error: error.message });
     if (error instanceof FreeEvaluationLimitError) return response.status(429).json({ error: error.message, code: "FREE_EVALUATION_LIMIT_REACHED" });
+    if (error instanceof ScenarioLimitError) return response.status(403).json({ error: error.message, code: "SCENARIO_LIMIT_REACHED" });
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2025") {
       return response.status(404).json({ error: "Resource not found" });
     }

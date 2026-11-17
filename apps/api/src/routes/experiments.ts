@@ -3,7 +3,8 @@ import { z } from "zod";
 import { prisma } from "../prisma.js";
 import { executeRun, findRun, requestStop, type TestCase } from "./evaluations.js";
 import { attachReservationToRun, releasePlatformCredit, reservePlatformCredit, reservePlatformCreditForRun } from "../services/usage.js";
-import { authRequired, optionalAuth } from "../auth.js";
+import { assertExperimentScenarioLimit } from "../services/limits.js";
+import { authRequired } from "../auth.js";
 import {
   aggregateVariant,
   compareCriteria,
@@ -79,6 +80,7 @@ experimentsRouter.post("/experiments", authRequired, async (req, res, next) => {
     const dataset = await prisma.dataset.findUnique({ where: { id: payload.datasetId }, select: { id: true, name: true, isSample: true, userId: true } });
     if (!dataset) return res.status(404).json({ error: "Dataset not found" });
     if (!dataset.isSample && dataset.userId !== req.user!.id) return res.status(404).json({ error: "Dataset not found" });
+    await assertExperimentScenarioLimit(req.user!.id, dataset.id);
     const baseline = payload.baselineSelection
       ? await resolveModelSelection(req.user!.id, payload.baselineSelection)
       : await resolveLegacyModel(req.user!.id, payload.baselineModel);
@@ -118,7 +120,7 @@ experimentsRouter.post("/experiments", authRequired, async (req, res, next) => {
 });
 
 // GET /api/experiments — list root experiments with the latest iteration's result deltas and decision
-experimentsRouter.get("/experiments", optionalAuth, async (req, res, next) => {
+experimentsRouter.get("/experiments", authRequired, async (req, res, next) => {
   try {
     const userId = req.user?.id ?? null;
     const experiments = await prisma.experiment.findMany({
@@ -173,7 +175,7 @@ experimentsRouter.get("/experiments", optionalAuth, async (req, res, next) => {
 });
 
 // GET /api/experiments/:id — full detail with comparison, criteria, scenarios, regressions
-experimentsRouter.get("/experiments/:id", optionalAuth, async (req, res, next) => {
+experimentsRouter.get("/experiments/:id", authRequired, async (req, res, next) => {
   try {
     const owner = await prisma.experiment.findUnique({ where: { id: req.params.id }, select: { userId: true } });
     if (!owner) return res.status(404).json({ error: "Experiment not found" });
@@ -213,10 +215,12 @@ experimentsRouter.post("/experiments/:id/run", authRequired, async (req, res, ne
   try {
     const existing = await prisma.experiment.findUnique({
       where: { id: req.params.id },
-      select: { userId: true, baselineModel: true, candidateModel: true, evaluatorModel: true, modelConfigA: true, modelConfigB: true, evaluatorConfig: true },
+      select: { userId: true, datasetId: true, baselineModel: true, candidateModel: true, evaluatorModel: true, modelConfigA: true, modelConfigB: true, evaluatorConfig: true },
     });
     if (!existing) return res.status(404).json({ error: "Experiment not found" });
     if (existing.userId !== req.user!.id) return res.status(404).json({ error: "Experiment not found" });
+    // The dataset can grow after the draft is created, so the scenario limit is re-checked here.
+    await assertExperimentScenarioLimit(req.user!.id, existing.datasetId);
     const resolved = await resolveExperimentProviders(req.user!.id, existing);
     const usesPlatform = [resolved.a.snapshot, resolved.b.snapshot, ...(resolved.evaluator ? [resolved.evaluator.snapshot] : [])].some((snapshot) => snapshot.source === "platform_free");
     reservationId = usesPlatform ? await reservePlatformCredit(req.user!.id, "experiment") : undefined;

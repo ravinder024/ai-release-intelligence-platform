@@ -20,6 +20,7 @@ type UsageSummary = {
   unlimited: boolean;
   byokConfigured: boolean;
   platformCreditsAvailable: boolean;
+  scenarioLimit: number | null;
 };
 
 type RowState = { busy?: boolean; error?: string; notice?: string; confirming?: boolean; editing?: boolean; label?: string; key?: string };
@@ -164,6 +165,9 @@ export function SettingsPage() {
             Runs on your own keys never consume Platform Free credits
             {usage?.byokConfigured ? " — you already have at least one connection." : " — add a connection below to run without limits."}
           </p>
+          {usage?.scenarioLimit != null && (
+            <p className="hint">Free accounts can keep up to {usage.scenarioLimit} scenarios per dataset, and can run experiments on datasets of that size.</p>
+          )}
         </div>
       </div>
 

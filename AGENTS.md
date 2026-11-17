@@ -108,7 +108,13 @@ Management thinking, not just software engineering.
 - **Platform Free quota:** standard users receive five completed evaluations;
   Admin and the configured Tester are unlimited. Add existing usernames to
   `FULL_ACCESS_USERNAMES` (comma-separated, case-insensitive) for additional
-  unlimited accounts. BYOK runs do not consume platform credits.
+  unlimited accounts. BYOK runs do not consume platform credits. Only a fully
+  `completed` run is consumed; failures, stops, and runs swept after a restart are
+  released by `releaseOrphanedReservations()` (called from `recoverStaleRuns()`).
+- **Scenario cap:** standard users may keep at most 30 scenarios per dataset and may
+  not create/run experiments on datasets larger than that (`services/limits.ts`,
+  shared `FREE_SCENARIO_LIMIT`, 403 `SCENARIO_LIMIT_REACHED`). Full-access accounts
+  are exempt.
 - **Run controls:** `POST /api/experiments/:id/stop` (cooperative cancel, keeps
   finished work), `.../resume` (continues the same run: only missing/failed/unjudged
   evaluations), `.../run` (Restart = brand-new run). `.../retry` is the older alias

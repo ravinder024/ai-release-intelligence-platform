@@ -2,7 +2,8 @@ import { Router } from "express";
 import { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { prisma } from "../prisma.js";
-import { authRequired, optionalAuth } from "../auth.js";
+import { authRequired } from "../auth.js";
+import { assertCanAddScenario } from "../services/limits.js";
 import type { Dataset, DatasetTestCase } from "@prompt-playground/shared";
 
 // Ownership helper: samples (userId null) are shared read-only; user datasets are private.
@@ -54,7 +55,7 @@ datasetsRouter.post("/datasets", authRequired, async (request, response, next) =
   }
 });
 
-datasetsRouter.get("/datasets", optionalAuth, async (request, response, next) => {
+datasetsRouter.get("/datasets", authRequired, async (request, response, next) => {
   try {
     const requestedLimit = Number(request.query.limit ?? 50);
     const limit = Number.isFinite(requestedLimit) ? Math.min(Math.max(Math.floor(requestedLimit), 1), 100) : 50;
@@ -71,7 +72,7 @@ datasetsRouter.get("/datasets", optionalAuth, async (request, response, next) =>
   }
 });
 
-datasetsRouter.get("/datasets/:id", optionalAuth, async (request, response, next) => {
+datasetsRouter.get("/datasets/:id", authRequired, async (request, response, next) => {
   try {
     const dataset = await prisma.dataset.findUnique({
       where: { id: request.params.id },
@@ -129,6 +130,7 @@ datasetsRouter.post("/datasets/:id/test-cases", authRequired, async (request, re
     const dataset = await prisma.dataset.findUnique({ where: { id: request.params.id } });
     if (!dataset) return response.status(404).json({ error: "Dataset not found" });
     if (!isOwned(dataset, request.user!.id)) return response.status(403).json({ error: "Sample datasets are read-only" });
+    await assertCanAddScenario(request.user!.id, dataset.id);
     const maxPosition = await prisma.datasetTestCase.aggregate({
       where: { datasetId: dataset.id },
       _max: { position: true },

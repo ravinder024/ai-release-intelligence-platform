@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../prisma.js";
-import { authRequired, optionalAuth } from "../auth.js";
+import { authRequired } from "../auth.js";
 import { type Comparison, type CreateComparisonRequest, type PlaygroundStatus } from "@prompt-playground/shared";
 import { providerSnapshot, resolveLegacyModel, resolveModelSelection, resolveModelSnapshot } from "../services/modelSelection.js";
 import { invalidateComparisonRun, startComparisonRun } from "../services/comparisonRuns.js";
@@ -56,15 +56,15 @@ comparisonsRouter.post("/comparisons", authRequired, async (request, response, n
   }
 });
 
-comparisonsRouter.get("/comparisons", optionalAuth, async (request, response, next) => {
+comparisonsRouter.get("/comparisons", authRequired, async (request, response, next) => {
   try {
     const requestedLimit = Number(request.query.limit ?? 20);
     const limit = Number.isFinite(requestedLimit) ? Math.min(Math.max(Math.floor(requestedLimit), 1), 100) : 20;
-    const userId = request.user?.id ?? null;
+    const userId = request.user!.id;
     const comparisons = await prisma.promptComparison.findMany({
       take: limit,
       orderBy: { createdAt: "desc" },
-      where: { userId: userId ?? "00000000-0000-0000-0000-000000000000" },
+      where: { userId },
       include: { executions: { orderBy: { variant: "asc" } } },
     });
     response.json(comparisons.map(toComparison));
@@ -73,12 +73,12 @@ comparisonsRouter.get("/comparisons", optionalAuth, async (request, response, ne
   }
 });
 
-comparisonsRouter.get("/comparisons/:id", optionalAuth, async (request, response, next) => {
+comparisonsRouter.get("/comparisons/:id", authRequired, async (request, response, next) => {
   try {
     const comparison = await findComparison(request.params.id);
     if (!comparison) return response.status(404).json({ error: "Comparison not found" });
     // Legacy records without an owner are not readable by anonymous callers.
-    if (!comparison.userId || comparison.userId !== request.user?.id) return response.status(404).json({ error: "Comparison not found" });
+    if (!comparison.userId || comparison.userId !== request.user!.id) return response.status(404).json({ error: "Comparison not found" });
     return response.json(comparison);
   } catch (error) {
     return next(error);

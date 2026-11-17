@@ -90,7 +90,7 @@ export function HomePage() {
           ) : (
             <>
               <Link className="primary" to="/auth/login">Sign in to start</Link>
-              <Link className="secondary" to="/manual">Read the user manual</Link>
+              <Link className="secondary" to="/auth/signup">Create an account</Link>
             </>
           )}
         </div>

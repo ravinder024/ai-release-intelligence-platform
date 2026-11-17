@@ -11,7 +11,7 @@ Built as a portfolio case study demonstrating AI Product Management thinking end
 - **Phase 2 — Dataset Evaluation:** create datasets of test scenarios, run both prompts across every scenario with a live progress bar, and read the results table (output, latency, tokens, cost).
 - **Phase 3 — AI Judge / Evaluation Metrics:** LLM-as-a-Judge scoring, pass rates, criterion-level performance, and regression detection.
 - **Phase 4 — Experiments & Release Intelligence:** first-class Experiments (draft → baseline vs candidate → run → results → recommendation), partial-failure retry with model switching, iteration chains, comparability warnings, and a product decision (promote / keep / continue).
-- **Phase 5 — Accounts, Model Providers & Failure Analysis:** username/password accounts with secure server sessions and an emergency local Admin, private workspaces, five platform-funded free evaluations for standard accounts (unlimited for Admin, configured Tester, and usernames in `FULL_ACCESS_USERNAMES`), encrypted multi-provider BYOK (OpenAI, Anthropic, Google Gemini, DeepSeek, OpenRouter) with labelled connections and dynamically discovered model catalogs, immutable provider/model configuration snapshots, and deterministic **Failure Analysis** that classifies failures, cites evidence, and turns failures into reviewable regression datasets.
+- **Phase 5 — Accounts, Model Providers & Failure Analysis:** username/password accounts with secure server sessions and an emergency local Admin, private workspaces, five platform-funded free evaluations for standard accounts (unlimited for Admin, configured Tester, and usernames in `FULL_ACCESS_USERNAMES`), a 30-scenario cap per dataset for standard accounts, encrypted multi-provider BYOK (OpenAI, Anthropic, Google Gemini, DeepSeek, OpenRouter) with labelled connections and dynamically discovered model catalogs, immutable provider/model configuration snapshots, and deterministic **Failure Analysis** that classifies failures, cites evidence, and turns failures into reviewable regression datasets.
 
 > 📖 Full end-user guidance lives in the **[User Manual](docs/User%20manual.md)**.
 
@@ -75,7 +75,7 @@ Requirements: Node.js 18+, PostgreSQL running locally.
 - **Forgot password:** request a one-time reset code (shown in-app — no email service), then set a new password.
 - **Model providers:** go to **Settings → API keys** to add one or more labelled API connections (OpenAI, Anthropic, Google Gemini, DeepSeek, OpenRouter). A key is validated by listing its models **and** sending a single-token test request, so a key that cannot actually run is rejected instead of silently saved. Keys are encrypted at rest (AES-256-GCM) and never returned to the client. `Platform Free` models use the platform's own key and count against the free allowance; `BYOK` runs use yours and consume no platform credits.
 - **Immutable configuration:** every evaluation and experiment stores the provider, source category, connection label, and model used — never the credential — so historical results stay readable after a key is renamed or removed.
-- **Private workspace:** your datasets, runs, and experiments are visible only to you. The two sample datasets are shared and read-only.
+- **Private workspace:** sign-in is required for every workspace (Playground, Datasets, Experiments, and Manual). Your datasets, runs, and experiments are visible only to you. The two sample datasets are shared and read-only once signed in.
 
 ## Documentation
 

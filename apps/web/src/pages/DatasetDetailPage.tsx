@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import type { DatasetDetail, DatasetTestCase } from "@prompt-playground/shared";
+import { FREE_SCENARIO_LIMIT } from "@prompt-playground/shared";
 import { api } from "../api";
 
 const emptyScenario = { input: "", expectedOutput: "", evaluationCriteria: "", notes: "", requiresReview: false };
@@ -177,7 +178,7 @@ export function DatasetDetailPage() {
         <div><p className="eyebrow">EXAMPLES</p><h2>Scenarios</h2></div>
         <button className="primary" onClick={() => navigate(`/datasets/${dataset.id}/evaluate`)}>Run evaluation</button>
       </div>
-      <p className="hint">Keep datasets under 50 scenarios for fast evaluations.</p>
+      <p className="hint">Free accounts can keep up to {FREE_SCENARIO_LIMIT} scenarios per dataset; Full access accounts have no cap. Smaller datasets also evaluate faster.</p>
 
       {error && dataset && <p className="error" role="alert">{error}</p>}
 

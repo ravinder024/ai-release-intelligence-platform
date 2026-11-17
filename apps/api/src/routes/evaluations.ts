@@ -4,7 +4,7 @@ import { prisma } from "../prisma.js";
 import { runModel } from "../services/execution.js";
 import { judgeResult } from "../services/evaluator.js";
 import { attachReservationToRun, reservePlatformCredit, settlePlatformCredit } from "../services/usage.js";
-import { authRequired, optionalAuth } from "../auth.js";
+import { authRequired } from "../auth.js";
 import { type EvaluationResult, type EvaluationRun, type EvaluationRunSummary, type ModelId, type ModelSelectionSnapshot } from "@prompt-playground/shared";
 import type { ModelOutcome } from "../services/execution.js";
 import { rateLimit } from "../rateLimit.js";
@@ -163,7 +163,7 @@ evaluationsRouter.post("/evaluations", authRequired, async (request, response, n
   }
 });
 
-evaluationsRouter.get("/evaluations", optionalAuth, async (request, response, next) => {
+evaluationsRouter.get("/evaluations", authRequired, async (request, response, next) => {
   try {
     const requestedLimit = Number(request.query.limit ?? 20);
     const limit = Number.isFinite(requestedLimit) ? Math.min(Math.max(Math.floor(requestedLimit), 1), 100) : 20;
@@ -183,7 +183,7 @@ evaluationsRouter.get("/evaluations", optionalAuth, async (request, response, ne
   }
 });
 
-evaluationsRouter.get("/evaluations/:id", optionalAuth, async (request, response, next) => {
+evaluationsRouter.get("/evaluations/:id", authRequired, async (request, response, next) => {
   try {
     const run = await findRun(request.params.id);
     if (!run) return response.status(404).json({ error: "Evaluation run not found" });
