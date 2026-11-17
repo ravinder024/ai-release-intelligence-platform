@@ -190,8 +190,19 @@ export class ApiKeyModelProvider implements ModelProvider {
         signal: AbortSignal.timeout(60_000),
       }));
       if (status < 200 || status >= 300) throw new Error(describe(status, data));
-      const output = data?.choices?.[0]?.message?.content;
-      if (typeof output !== "string" || !output.trim()) throw new Error(`Provider returned no usable chat completion for ${model}.`);
+      const message = data?.choices?.[0]?.message;
+      const content = typeof message?.content === "string" ? message.content : "";
+      // Reasoning models (deepseek-r1 on OpenRouter) sometimes return an empty `content` with the
+      // answer left in `reasoning`. Previously that surfaced as "no usable chat completion" and the
+      // judgement was thrown away; using the reasoning text as a fallback lets the judge's JSON
+      // still be read.
+      const reasoning = typeof message?.reasoning === "string" ? message.reasoning : "";
+      const output = content.trim() ? content : reasoning;
+      if (!output.trim()) {
+        throw new Error(
+          `The model returned an empty answer for ${model}. Reasoning models occasionally do this when they run out of budget or are overloaded — Resume will retry, or pick a faster judge model.`,
+        );
+      }
       return {
         output,
         inputTokens: Number(data?.usage?.prompt_tokens ?? data?.usage?.input_tokens ?? 0),

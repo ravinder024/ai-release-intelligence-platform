@@ -146,6 +146,7 @@ Notes:
 - If the judge failed on some answers (for example because a free model was rate-limited), **Resume** re-scores just those answers.
 - A low judge score is a real quality finding, not a failure — those answers are not re-run.
 - **One run per dataset at a time.** While a dataset is still evaluating, starting another run (or clicking Restart again) answers "Another evaluation for this dataset is still running." Use **Stop** first if you want to start over. This keeps a single click from turning into a dozen overlapping runs.
+- **Judging is the slow part.** A reasoning judge (for example `deepseek-r1`) thinks before it answers, so expect roughly 30–60 seconds per scenario. The judge is given up to 90 seconds per answer; if one still fails, the run finishes as **partial failure** and **Resume** re-scores only those answers.
 
 ## Phase 3 workflow: automated judging and review
 

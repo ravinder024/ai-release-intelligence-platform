@@ -135,8 +135,9 @@ Management thinking, not just software engineering.
   `judgement.create` produced P2002 errors that marked healthy runs `partial_failure`.
 - **Provider governor:** every outbound model *and* judge call takes a slot from one global pool
   (`services/providerLimiter.ts`, `PROVIDER_MAX_CONCURRENCY`, default 4), and judge calls are
-  hard-capped (`JUDGE_TIMEOUT_MS`, default 45s) so a stalled judge can never leave a run
-  `running` forever.
+  hard-capped (`JUDGE_TIMEOUT_MS`, default 90s) so a stalled judge can never leave a run
+  `running` forever. Judges ask for `JUDGE_MAX_TOKENS` (default 4096) because reasoning models
+  spend most of a small budget thinking and used to return cut-off JSON.
 - **Cache headers:** `index.html` is served `no-cache` so a deploy is picked up immediately;
   hashed bundles stay cacheable.
 - **Rate limiting pitfall:** routers are all mounted on `/api`, and a router-level
