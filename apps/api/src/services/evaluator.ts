@@ -5,8 +5,9 @@ import { withProviderSlot } from "./providerLimiter.js";
  * A judge call must never hang forever: a stalled request would keep its evaluation run in
  * `running` indefinitely and the user would see a progress bar that never moves. Every attempt
  * is capped, so a slow judge degrades into a failed judgement that Resume can re-score.
+ * Reasoning judges think before answering, so the cap is generous but finite.
  */
-const JUDGE_TIMEOUT_MS = Math.max(5_000, Number(process.env.JUDGE_TIMEOUT_MS ?? 45_000));
+const JUDGE_TIMEOUT_MS = Math.max(5_000, Number(process.env.JUDGE_TIMEOUT_MS ?? 90_000));
 
 /**
  * Reasoning judges (e.g. deepseek-r1) spend most of their completion budget on hidden reasoning,
