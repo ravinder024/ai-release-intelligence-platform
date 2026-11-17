@@ -223,6 +223,41 @@ async function main() {
     check("scenario cap error code", (overLimit.data as { code?: string }).code, "SCENARIO_LIMIT_REACHED");
     check("dataset still holds 30 scenarios", await prisma.datasetTestCase.count({ where: { datasetId: datasetA.id } }), 30);
 
+    // -- resume/restart controls on plain dataset evaluations
+    const resumeDataset = await prisma.dataset.create({
+      data: { name: `Resume fixture ${Date.now()}`, isSample: false, userId, testCases: { create: [{ input: "resume case", position: 0 }] } },
+    });
+    const testCaseId = (await prisma.datasetTestCase.findFirst({ where: { datasetId: resumeDataset.id }, select: { id: true } }))!.id;
+    const finishedRun = await prisma.evaluationRun.create({
+      data: {
+        datasetId: resumeDataset.id,
+        model: "nvidia/nemotron-3.5-lightning:free",
+        promptA: "a",
+        promptB: "b",
+        status: "completed",
+        userId,
+        results: {
+          create: [
+            { testCaseId, variant: "A", status: "completed", output: "ok", prompt: "a" },
+            { testCaseId, variant: "B", status: "completed", output: "ok", prompt: "b" },
+          ],
+        },
+      },
+    });
+    check("resume by another account 404", (await request(base, sessionB, `/api/evaluations/${finishedRun.id}/resume`, "POST", {})).status, 404);
+    const nothingToResume = await request(base, sessionA, `/api/evaluations/${finishedRun.id}/resume`, "POST", {});
+    check("resume with no gaps reports zero retried", (nothingToResume.data as { retried?: number }).retried, 0);
+    await prisma.evaluationRun.update({ where: { id: finishedRun.id }, data: { status: "running" } });
+    check("resume while running 409", (await request(base, sessionA, `/api/evaluations/${finishedRun.id}/resume`, "POST", {})).status, 409);
+    await prisma.evaluationRun.delete({ where: { id: finishedRun.id } });
+
+    // -- polling must not be throttled: the results page polls continuously during a run
+    const pollStatuses: number[] = [];
+    for (let index = 0; index < 40; index += 1) {
+      pollStatuses.push((await request(base, sessionA, "/api/evaluations?limit=1")).status);
+    }
+    check("40 evaluation polls are not throttled", pollStatuses.filter((status) => status === 429).length, 0);
+
     // -- manual endpoint is protected like the other workspace tabs
     const anonManual = await request(base, { cookie: "" }, "/api/manual");
     check("anonymous manual requires login", anonManual.status, 401);

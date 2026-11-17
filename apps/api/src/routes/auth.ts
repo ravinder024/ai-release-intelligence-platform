@@ -50,7 +50,14 @@ const validateKeySchema = z.object({
 });
 
 export const authRouter = Router();
-authRouter.use(rateLimit({ name: "auth", windowMs: 60_000, max: 60 }));
+// Scoped on purpose: a router-level `use()` also runs for every other /api route mounted on the
+// same prefix, so a 60/min auth bucket would silently cap polling and dataset listing.
+const authLimit = rateLimit({ name: "auth", windowMs: 60_000, max: 60 });
+authRouter.use((request, response, next) => {
+  const isAuthPath = request.path === "/usage" || request.path.startsWith("/auth");
+  if (!isAuthPath) return next();
+  return authLimit(request, response, next);
+});
 
 authRouter.get("/usage", authRequired, async (request, response, next) => {
   try {

@@ -130,7 +130,21 @@ Once the evaluation completes, review:
 - Token usage for each call
 - Estimated cost for each result
 
-The results page shows progress while the run is still `running`, then preserves a completed record for review.
+The results page shows progress while the run is still `running`, then preserves a completed record for review. The page updates itself every few seconds; with an LLM judge it also tells you how many answers are back and how many have been judged, so a slow judge never looks frozen.
+
+### Dataset run controls: Stop, Resume, Restart
+
+| Control | When it appears | What it does |
+| --- | --- | --- |
+| **Stop** | While the run is in progress | Halts the run and keeps every scenario already evaluated. The run becomes **partial failure**. |
+| **Resume (N left)** | When results are missing, an execution failed, or the judge never scored an answer | Continues **the same run** and re-runs only the missing or failed work. Finished results are never repeated. |
+| **Restart** | On any finished run | Starts a **brand-new run** of every scenario and opens it. The previous run stays in history. |
+
+Notes:
+
+- Only a fully **completed** run uses one of your five Platform Free evaluations. A run that fails, is stopped, or is interrupted by a restart does **not** cost a credit, and a **Resume** continues the existing run rather than starting a new one.
+- If the judge failed on some answers (for example because a free model was rate-limited), **Resume** re-scores just those answers.
+- A low judge score is a real quality finding, not a failure — those answers are not re-run.
 
 ## Phase 3 workflow: automated judging and review
 

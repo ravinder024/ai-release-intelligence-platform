@@ -19,15 +19,20 @@ export function DatasetsPage() {
   useEffect(() => { void load(); }, []);
 
   async function load() {
-    try {
-      const [datasetList, runList] = await Promise.all([
-        api.get<Dataset[]>("/api/datasets"),
-        api.get<EvaluationRunSummary[]>("/api/evaluations?limit=5"),
-      ]);
-      setDatasets(datasetList);
-      setRuns(runList);
-    } catch {
-      // Show empty states if the API is not reachable yet.
+    // Load independently: a failing runs request must never hide the dataset list behind a
+    // misleading "No datasets yet" empty state.
+    const [datasetResult, runResult] = await Promise.allSettled([
+      api.get<Dataset[]>("/api/datasets"),
+      api.get<EvaluationRunSummary[]>("/api/evaluations?limit=5"),
+    ]);
+    if (datasetResult.status === "fulfilled") {
+      setDatasets(datasetResult.value);
+    } else {
+      const reason = datasetResult.reason;
+      setError(reason instanceof Error ? reason.message : "Could not load your datasets");
+    }
+    if (runResult.status === "fulfilled") {
+      setRuns(runResult.value);
     }
   }
 
@@ -95,7 +100,16 @@ export function DatasetsPage() {
         </form>
       )}
 
-      {datasets.length === 0 && !showCreate ? (
+      {error && (
+        <div className="panel notice" role="alert">
+          <p>Could not load your datasets: {error}</p>
+          <div className="row-actions">
+            <button type="button" className="secondary" onClick={() => { setError(null); void load(); }}>Retry</button>
+          </div>
+        </div>
+      )}
+
+      {datasets.length === 0 && !showCreate && !error ? (
         <div className="empty">No datasets yet. Create one to start evaluating your prompts.</div>
       ) : (
         <div className="dataset-grid">

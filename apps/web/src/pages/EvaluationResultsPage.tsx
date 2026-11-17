@@ -1,13 +1,16 @@
 import { useCallback, useEffect, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { supportedModels, type EvaluationResult, type EvaluationRun, type Experiment } from "@prompt-playground/shared";
 import { api, getExperiment } from "../api";
 
 export function EvaluationResultsPage() {
   const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
   const [run, setRun] = useState<EvaluationRun | null>(null);
   const [experiment, setExperiment] = useState<Experiment | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [actionBusy, setActionBusy] = useState<"stop" | "resume" | "restart" | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -21,21 +24,20 @@ export function EvaluationResultsPage() {
   }, [id]);
 
   useEffect(() => {
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    void (async () => {
-      const first = await load();
-      if (cancelled || !first || first.status !== "running") return;
-      timer = setInterval(async () => {
-        const current = await load();
-        if (cancelled) return;
-        if (!current || current.status !== "running" && timer) {
-          if (timer) clearInterval(timer);
-        }
-      }, 2000);
-    })();
-    return () => { cancelled = true; if (timer) clearInterval(timer); };
+    void load();
   }, [load]);
+
+  // Poll whenever the run is in progress — including when it starts *after* mount (Resume).
+  // Polling only on mount left a resumed run frozen at its old progress until a manual reload.
+  useEffect(() => {
+    if (run?.status !== "running") return;
+    let cancelled = false;
+    const timer = setInterval(() => {
+      if (cancelled) return;
+      void load();
+    }, 3000);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, [run?.status, load]);
 
   useEffect(() => {
     if (!run?.experimentId) { setExperiment(null); return; }
@@ -51,8 +53,31 @@ export function EvaluationResultsPage() {
 
   const isRunning = run.status === "running";
   const percent = run.progress.total === 0 ? 0 : Math.round((run.progress.completed / run.progress.total) * 100);
-
+  const executionPercent = run.progress.total === 0 ? 0 : Math.round((run.progress.executionsCompleted / run.progress.total) * 100);
   const hasJudge = Boolean(run.evaluatorModel);
+  const remainingWork = run.progress.total - run.progress.completed;
+
+  async function act(kind: "resume" | "restart") {
+    if (!run) return;
+    setActionBusy(kind);
+    setError(null);
+    setNotice(null);
+    try {
+      const result = await api.post<EvaluationRun | { run: EvaluationRun }>(`/api/evaluations/${run.id}/${kind}`, {});
+      const next = "run" in result ? result.run : result;
+      if (kind === "restart") {
+        // Restart creates a NEW run; open it so the page is not stuck on the old, finished one.
+        navigate(`/evaluations/${next.id}`);
+        return;
+      }
+      setRun(next);
+      setNotice("Resumed — re-running only the missing or failed scenarios.");
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : `Could not ${kind} this run`);
+    } finally {
+      setActionBusy(null);
+    }
+  }
 
   return (
     <section>
@@ -88,37 +113,54 @@ export function EvaluationResultsPage() {
         <span className={`status ${run.status}`}>{run.status.replace("_", " ")}</span>
       </div>
 
+      {error && (
+        <p className="error" role="alert">{error}</p>
+      )}
+      {notice && (
+        <p className="success" role="status">{notice}</p>
+      )}
+
       {isRunning ? (
         <div className="panel progress-panel">
           <div className="progress-row"><span>Evaluating {run.testCases.length} scenario{run.testCases.length === 1 ? "" : "s"}…</span><strong>{run.progress.completed} / {run.progress.total}</strong></div>
-          <div className="progress-track"><div className="progress-fill" style={{ width: `${percent}%` }} /></div>
-          <p className="hint">Running scenarios a few at a time to avoid rate limits. This page updates automatically.</p>
+          <div className="progress-track"><div className="progress-fill" style={{ width: `${hasJudge ? executionPercent : percent}%` }} /></div>
+          <p className="hint">
+            {hasJudge
+              ? `${run.progress.executionsCompleted} of ${run.progress.total} answers received · ${run.progress.completed} judged and passed. The judge can take a while on free models.`
+              : "Running scenarios a few at a time to avoid rate limits. This page updates automatically."}
+          </p>
           <div className="run-actions">
             <button type="button" onClick={async () => {
               if (!confirm('Stop this run? In-flight jobs will finish but remaining jobs will be cancelled.')) return;
+              setActionBusy("stop");
+              setError(null);
               try {
                 await api.post(`/api/evaluations/${run.id}/stop`, {});
               } catch (err) {
                 setError(err instanceof Error ? err.message : 'Could not stop run');
+                setActionBusy(null);
                 return;
               }
-              // poll until the run is no longer running (or timeout after 15s)
-              const until = Date.now() + 15000;
-              while (Date.now() < until) {
-                const current = await load();
-                if (!current || current.status !== 'running') break;
-                await new Promise((r) => setTimeout(r, 1000));
-              }
-            }}>Stop</button>
+              setActionBusy(null);
+              await load();
+            }} disabled={actionBusy !== null}>{actionBusy === "stop" ? "Stopping…" : "Stop"}</button>
           </div>
         </div>
       ) : (
         <div className="panel summary-bar">
           <span>{run.testCases.length} scenario{run.testCases.length === 1 ? "" : "s"}</span>
-          <span>{run.progress.completed} results saved</span>
+          <span>{run.progress.completed} of {run.progress.total} evaluated</span>
           {run.completedAt && <span>Finished {new Date(run.completedAt).toLocaleTimeString()}</span>}
           <div className="run-actions">
-            <button type="button" onClick={async () => { await api.post(`/api/evaluations/${run.id}/restart`, {}); await load(); }}>Restart</button>
+            {remainingWork > 0 && (
+              <button type="button" className="secondary" onClick={() => void act("resume")} disabled={actionBusy !== null}>
+                {actionBusy === "resume" ? "Resuming…" : `Resume (${remainingWork} left)`}
+              </button>
+            )}
+            <button type="button" onClick={async () => {
+              if (!confirm('Start a brand-new run of every scenario? The current results are kept in history.')) return;
+              await act("restart");
+            }} disabled={actionBusy !== null}>{actionBusy === "restart" ? "Starting…" : "Restart"}</button>
           </div>
         </div>
       )}

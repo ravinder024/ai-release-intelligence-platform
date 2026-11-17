@@ -264,7 +264,7 @@ export type EvaluationRun = {
   status: ComparisonStatus;
   createdAt: string;
   completedAt: string | null;
-  progress: { completed: number; total: number };
+  progress: { completed: number; total: number; executionsCompleted: number };
   testCases: DatasetTestCase[];
   results: EvaluationResult[];
 };

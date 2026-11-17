@@ -15,7 +15,13 @@ const addSchema = z.object({ provider: providerSchema, label: labelSchema, apiKe
 const updateSchema = z.object({ label: labelSchema.optional(), apiKey: keySchema.optional() }).refine((value) => value.label !== undefined || value.apiKey !== undefined, "Provide a new label or API key");
 
 export const providersRouter = Router();
-providersRouter.use(rateLimit({ name: "provider-connections", windowMs: 60_000, max: 30 }));
+// Scoped on purpose (see authRouter): this limiter must not count evaluation polling requests.
+const providerLimit = rateLimit({ name: "provider-connections", windowMs: 60_000, max: 30 });
+providersRouter.use((request, response, next) => {
+  const isProviderPath = request.path.startsWith("/provider-connections") || request.path === "/model-catalog";
+  if (!isProviderPath) return next();
+  return providerLimit(request, response, next);
+});
 
 function connectionSummary(row: { id: string; provider: ApiProvider; label: string; keyLast4: string; modelCatalog: unknown; catalogUpdatedAt: Date | null; createdAt: Date; updatedAt: Date }): ProviderConnectionSummary {
   return {

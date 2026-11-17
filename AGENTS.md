@@ -119,6 +119,15 @@ Management thinking, not just software engineering.
   finished work), `.../resume` (continues the same run: only missing/failed/unjudged
   evaluations), `.../run` (Restart = brand-new run). `.../retry` is the older alias
   for resume. End-to-end check: `node apps/api/scripts/verify-customer-support-experiment.mjs`.
+- **Dataset evaluation run controls:** `POST /api/evaluations/:id/stop`, `.../resume`
+  (re-runs only missing/failed/unjudged pairs in the same run via `executeRun({jobs,upsert})`,
+  reopening the existing credit with `reservePlatformCreditForRun`) and `.../restart`
+  (brand-new run). The results page polls every 3s and reports answers received as well as
+  answers judged.
+- **Rate limiting pitfall:** routers are all mounted on `/api`, and a router-level
+  `use(rateLimit(...))` runs for *every* `/api` request, so the smallest limit becomes a
+  global ceiling. Limiters must be path-scoped (`auth`, `provider-connections`) or bound to
+  specific routes. Evaluation GETs use a 600/min read bucket so 3s polling is never throttled.
 - **Playground run controls:** `POST /api/comparisons` returns immediately and the run
   continues in `apps/api/src/services/comparisonRuns.ts` (in-process registry, execution
   epoch, `PLAYGROUND_CALL_TIMEOUT_MS` per call, default 60s). `.../stop`, `DELETE

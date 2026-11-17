@@ -3,7 +3,7 @@ import { z } from "zod";
 import { prisma } from "../prisma.js";
 import { runModel } from "../services/execution.js";
 import { judgeResult } from "../services/evaluator.js";
-import { attachReservationToRun, reservePlatformCredit, settlePlatformCredit } from "../services/usage.js";
+import { attachReservationToRun, reservePlatformCredit, reservePlatformCreditForRun, settlePlatformCredit } from "../services/usage.js";
 import { authRequired } from "../auth.js";
 import { type EvaluationResult, type EvaluationRun, type EvaluationRunSummary, type ModelId, type ModelSelectionSnapshot } from "@prompt-playground/shared";
 import type { ModelOutcome } from "../services/execution.js";
@@ -65,7 +65,10 @@ export async function requestStop(runId: string): Promise<boolean> {
 }
 
 export const evaluationsRouter = Router();
-evaluationsRouter.use(rateLimit({ name: "evaluations", windowMs: 60_000, max: 20 }));
+// Polling (`GET /evaluations/:id`) must never share a bucket with mutating calls: the results page
+// polls every few seconds, so a single tight limit throttled the poller and froze the progress bar.
+const evaluationReadLimit = rateLimit({ name: "evaluations-read", windowMs: 60_000, max: 600 });
+const evaluationWriteLimit = rateLimit({ name: "evaluations-write", windowMs: 60_000, max: 30 });
 
 /**
  * Run ids currently being executed by this process. Used by the stale-run recovery sweep so it
@@ -75,7 +78,7 @@ export function activeRunIds(): string[] {
   return [...runExecutionEpoch.keys()];
 }
 
-evaluationsRouter.post("/evaluations", authRequired, async (request, response, next) => {
+evaluationsRouter.post("/evaluations", evaluationWriteLimit, authRequired, async (request, response, next) => {
   let reservationId: string | undefined;
   try {
     const payload = runEvaluationSchema.parse(request.body);
@@ -154,6 +157,9 @@ evaluationsRouter.post("/evaluations", authRequired, async (request, response, n
       modelConfigB: resolvedB.snapshot,
       evaluatorConfig: resolvedEvaluator?.snapshot ?? null,
       reservationId,
+    }).catch((error) => {
+      // An unhandled rejection here would take the process down and leave the run to the sweep.
+      console.error(`Evaluation run ${run.id} failed to start:`, error);
     });
 
     return response.status(201).json(await findRun(run.id));
@@ -163,7 +169,7 @@ evaluationsRouter.post("/evaluations", authRequired, async (request, response, n
   }
 });
 
-evaluationsRouter.get("/evaluations", authRequired, async (request, response, next) => {
+evaluationsRouter.get("/evaluations", evaluationReadLimit, authRequired, async (request, response, next) => {
   try {
     const requestedLimit = Number(request.query.limit ?? 20);
     const limit = Number.isFinite(requestedLimit) ? Math.min(Math.max(Math.floor(requestedLimit), 1), 100) : 20;
@@ -183,7 +189,7 @@ evaluationsRouter.get("/evaluations", authRequired, async (request, response, ne
   }
 });
 
-evaluationsRouter.get("/evaluations/:id", authRequired, async (request, response, next) => {
+evaluationsRouter.get("/evaluations/:id", evaluationReadLimit, authRequired, async (request, response, next) => {
   try {
     const run = await findRun(request.params.id);
     if (!run) return response.status(404).json({ error: "Evaluation run not found" });
@@ -195,7 +201,7 @@ evaluationsRouter.get("/evaluations/:id", authRequired, async (request, response
   }
 });
 
-evaluationsRouter.post("/evaluations/:id/stop", authRequired, async (request, response, next) => {
+evaluationsRouter.post("/evaluations/:id/stop", evaluationWriteLimit, authRequired, async (request, response, next) => {
   try {
     const id = request.params.id;
     const run = await prisma.evaluationRun.findUnique({ where: { id }, select: { id: true, userId: true, status: true } });
@@ -208,7 +214,7 @@ evaluationsRouter.post("/evaluations/:id/stop", authRequired, async (request, re
   }
 });
 
-evaluationsRouter.post("/evaluations/:id/restart", authRequired, async (request, response, next) => {
+evaluationsRouter.post("/evaluations/:id/restart", evaluationWriteLimit, authRequired, async (request, response, next) => {
   try {
     const id = request.params.id;
     const existing = await prisma.evaluationRun.findUnique({ where: { id } });
@@ -297,6 +303,117 @@ evaluationsRouter.post("/evaluations/:id/restart", authRequired, async (request,
     return response.status(201).json(await findRun(newRun.id));
   } catch (error) {
     next(error);
+  }
+});
+
+/**
+ * Resume a stopped or partially failed run: re-runs only the missing/failed work in the same run.
+ * A resume continues an existing evaluation, so it never spends a new platform credit — the
+ * original reservation (if it was released) is reopened instead.
+ */
+evaluationsRouter.post("/evaluations/:id/resume", evaluationWriteLimit, authRequired, async (request, response, next) => {
+  try {
+    const run = await prisma.evaluationRun.findUnique({
+      where: { id: request.params.id },
+      include: {
+        dataset: { select: { name: true, testCases: { orderBy: { position: "asc" } } } },
+        results: { include: { judgement: true } },
+      },
+    });
+    if (!run) return response.status(404).json({ error: "Evaluation run not found" });
+    if (run.userId !== request.user!.id) return response.status(404).json({ error: "Evaluation run not found" });
+    if (run.status === "running") return response.status(409).json({ error: "This run is already in progress." });
+
+    const testCases: TestCase[] = run.dataset.testCases.map((testCase) => ({
+      id: testCase.id,
+      input: testCase.input,
+      expectedOutput: testCase.expectedOutput,
+      evaluationCriteria: Array.isArray(testCase.evaluationCriteria) ? testCase.evaluationCriteria.map((item) => String(item)) : null,
+      notes: testCase.notes,
+      position: testCase.position,
+    }));
+    const judgeExpected = Boolean(run.evaluatorModel);
+
+    // Retryable = missing result, failed execution, failed judgement, or a completed execution the
+    // judge never scored (the jobs still in flight when the run was stopped).
+    const retryable: Array<{ testCase: TestCase; variant: "A" | "B" }> = [];
+    for (const testCase of testCases) {
+      for (const variant of ["A", "B"] as const) {
+        const result = run.results.find((item) => item.testCaseId === testCase.id && item.variant === variant);
+        if (!result) { retryable.push({ testCase, variant }); continue; }
+        if (result.status === "failed") { retryable.push({ testCase, variant }); continue; }
+        if (judgeExpected && (!result.judgement || result.judgement.status === "failed")) retryable.push({ testCase, variant });
+      }
+    }
+    if (retryable.length === 0) {
+      return response.json({ retried: 0, remaining: 0, run: await findRun(run.id) });
+    }
+
+    const configA = providerSnapshot(run.modelConfigA);
+    const configB = providerSnapshot(run.modelConfigB);
+    const evaluatorConfig = providerSnapshot(run.evaluatorConfig);
+    const resolvedA = configA
+      ? { provider: await resolveModelSnapshot(request.user!.id, configA), snapshot: configA }
+      : await resolveLegacyModel(request.user!.id, run.modelA ?? run.model);
+    const resolvedB = configB
+      ? { provider: await resolveModelSnapshot(request.user!.id, configB), snapshot: configB }
+      : await resolveLegacyModel(request.user!.id, run.modelB ?? run.model);
+    const resolvedEvaluator = run.evaluatorModel
+      ? evaluatorConfig
+        ? { provider: await resolveModelSnapshot(request.user!.id, evaluatorConfig), snapshot: evaluatorConfig }
+        : await resolveLegacyModel(request.user!.id, run.evaluatorModel)
+      : null;
+
+    const usesPlatform = [resolvedA.snapshot, resolvedB.snapshot, ...(resolvedEvaluator ? [resolvedEvaluator.snapshot] : [])].some((snapshot) => snapshot.source === "platform_free");
+    const reservationId = usesPlatform
+      ? await reservePlatformCreditForRun(request.user!.id, run.id, "resume")
+      : undefined;
+
+    await prisma.evaluationRun.update({
+      where: { id: run.id },
+      data: {
+        status: "running",
+        completedAt: null,
+        model: resolvedA.snapshot.modelId,
+        modelA: resolvedA.snapshot.modelId,
+        modelB: resolvedB.snapshot.modelId,
+        modelConfigA: resolvedA.snapshot,
+        modelConfigB: resolvedB.snapshot,
+        ...(resolvedEvaluator ? { evaluatorConfig: resolvedEvaluator.snapshot } : {}),
+      },
+    });
+    if (run.experimentId) {
+      await prisma.experiment.update({ where: { id: run.experimentId }, data: { status: "running" } });
+    }
+    runCancellation.set(run.id, false);
+
+    void executeRun({
+      runId: run.id,
+      model: resolvedA.snapshot.modelId,
+      modelA: resolvedA.snapshot.modelId,
+      modelB: resolvedB.snapshot.modelId,
+      testCases,
+      jobs: retryable,
+      upsert: true,
+      promptA: run.promptA,
+      promptB: run.promptB,
+      evaluatorModel: resolvedEvaluator?.snapshot.modelId,
+      evaluatorThreshold: run.evaluatorThreshold ?? null,
+      evaluatorPrompt: run.evaluatorPrompt ?? null,
+      providerA: resolvedA.provider,
+      providerB: resolvedB.provider,
+      evaluatorProvider: resolvedEvaluator?.provider,
+      modelConfigA: resolvedA.snapshot,
+      modelConfigB: resolvedB.snapshot,
+      evaluatorConfig: resolvedEvaluator?.snapshot ?? null,
+      reservationId,
+    }).catch((error) => {
+      console.error(`Resumed evaluation run ${run.id} failed to start:`, error);
+    });
+
+    return response.json({ retried: retryable.length, remaining: retryable.length, run: await findRun(run.id) });
+  } catch (error) {
+    return next(error);
   }
 });
 
@@ -587,6 +704,9 @@ export async function findRun(id: string): Promise<EvaluationRun | null> {
     if (!run.evaluatorModel) return true; // human judgement: any completed result counts
     return result.judgement?.status === "completed";
   }).length;
+  // Executions that produced an answer. While the judge is still working this keeps moving,
+  // so a judge-enabled run never looks frozen at 0 / total.
+  const executionsCompleted = run.results.filter((result) => result.status === "completed").length;
   return {
     id: run.id,
     datasetId: run.datasetId,
@@ -607,7 +727,7 @@ export async function findRun(id: string): Promise<EvaluationRun | null> {
     status: run.status,
     createdAt: run.createdAt.toISOString(),
     completedAt: run.completedAt?.toISOString() ?? null,
-    progress: { completed, total },
+    progress: { completed, total, executionsCompleted },
     testCases,
     results: run.results.map((result) => ({
       ...result,
