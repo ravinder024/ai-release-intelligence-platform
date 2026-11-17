@@ -31,13 +31,24 @@ const CONCURRENCY = 3;
 const PER_TEST_TIMEOUT_MS = Number(process.env.EVAL_TEST_TIMEOUT_MS ?? 45000);
 const MAX_ATTEMPTS = Number(process.env.EVAL_MAX_ATTEMPTS ?? 2);
 
-// In-memory cancellation registry for running evaluations (cooperative cancellation)
-const runCancellation = new Map<string, boolean>();
+// Cooperative cancellation, recorded per execution.
+//
+// A run can be stopped and resumed while the stopped execution is still finishing its in-flight
+// jobs. A single boolean per run cannot express that (clearing it for the resume would make the
+// stopped execution keep working). We instead record the highest execution epoch that was asked
+// to stop: an execution stops when its own epoch is at or below that mark, and a later resume
+// simply gets a higher epoch and runs normally.
+const runStopEpoch = new Map<string, number>();
 
 // Tracks which execution currently "owns" a run. A stopped run can be resumed, which starts a
 // new execution for the same run id; the epoch stops the superseded execution from overwriting
 // the newer one's status when it eventually unwinds.
 const runExecutionEpoch = new Map<string, number>();
+
+/** True when this specific execution has been asked to stop. */
+function isStopped(runId: string, epoch: number): boolean {
+  return epoch <= (runStopEpoch.get(runId) ?? 0);
+}
 
 /**
  * Cooperatively stop a run: flags in-flight work to wind down and immediately reflects the
@@ -51,8 +62,8 @@ export async function requestStop(runId: string): Promise<boolean> {
     select: { status: true, experimentId: true },
   });
   if (!run) return false;
-  // Always set the flag: an in-flight execution checks it between attempts and jobs.
-  runCancellation.set(runId, true);
+  // Always record the stop: an in-flight execution checks it between attempts and jobs.
+  runStopEpoch.set(runId, Math.max(runStopEpoch.get(runId) ?? 0, runExecutionEpoch.get(runId) ?? 0));
   if (run.status !== "running") return false;
   await prisma.evaluationRun.update({
     where: { id: runId },
@@ -76,6 +87,21 @@ const evaluationWriteLimit = rateLimit({ name: "evaluations-write", windowMs: 60
  */
 export function activeRunIds(): string[] {
   return [...runExecutionEpoch.keys()];
+}
+
+/**
+ * Take ownership of a run's status *before* the new execution actually starts.
+ *
+ * Stop is cooperative: jobs already in flight keep running (so finished work is never lost).
+ * When the user resumes immediately, that older execution unwinds *after* the resume already set
+ * the run back to `running` — without this claim it would overwrite the status with
+ * `partial_failure` and the page would stop polling. Claiming bumps the epoch, so the stale
+ * execution can no longer touch the status.
+ */
+export function claimRunExecution(runId: string): number {
+  const epoch = (runExecutionEpoch.get(runId) ?? 0) + 1;
+  runExecutionEpoch.set(runId, epoch);
+  return epoch;
 }
 
 /**
@@ -153,8 +179,8 @@ evaluationsRouter.post("/evaluations", evaluationWriteLimit, authRequired, async
     });
     if (reservationId) await attachReservationToRun(reservationId, run.id);
 
-    // register cancellation flag for this run (cooperative cancellation)
-    runCancellation.set(run.id, false);
+    // register this run so the sweep and stop controls can see it
+    claimRunExecution(run.id);
 
     const testCases = dataset.testCases.map((testCase) => ({
       id: testCase.id,
@@ -309,7 +335,7 @@ evaluationsRouter.post("/evaluations/:id/restart", evaluationWriteLimit, authReq
     }));
 
     // clear cancellation for the new run
-    runCancellation.delete(newRun.id);
+    claimRunExecution(newRun.id);
 
     // keep the owning experiment (if any) in sync while the fresh run executes
     if (newRun.experimentId) {
@@ -426,7 +452,8 @@ evaluationsRouter.post("/evaluations/:id/resume", evaluationWriteLimit, authRequ
     if (run.experimentId) {
       await prisma.experiment.update({ where: { id: run.experimentId }, data: { status: "running" } });
     }
-    runCancellation.set(run.id, false);
+    // the resume runs under a fresh epoch, so an earlier stop no longer applies to it
+    claimRunExecution(run.id);
 
     void executeRun({
       runId: run.id,
@@ -515,8 +542,7 @@ export async function executeRun({
   evaluatorConfig,
   reservationId,
 }: ExecuteRunOptions) {
-  // ensure cancellation flag exists for this run, and claim ownership of its status
-  runCancellation.set(runId, false);
+  // claim ownership of this run's status (and of the stop marker, which stays with older epochs)
   const epoch = (runExecutionEpoch.get(runId) ?? 0) + 1;
   runExecutionEpoch.set(runId, epoch);
 
@@ -529,8 +555,8 @@ export async function executeRun({
 
   try {
     await mapWithConcurrency(jobs, CONCURRENCY, async (job) => {
-      // cooperative cancellation: stop processing further jobs if run is cancelled
-      if (runCancellation.get(runId)) return;
+      // cooperative cancellation: stop processing further jobs if this execution was stopped
+      if (isStopped(runId, epoch)) return;
       try {
         const prompt = job.variant === "A" ? promptA : promptB;
         const variantModel = job.variant === "A" ? modelA ?? model : modelB ?? model;
@@ -541,7 +567,7 @@ export async function executeRun({
         let outcome: ModelOutcome | null = null;
         let lastError = "";
         for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-          if (runCancellation.get(runId)) break;
+          if (isStopped(runId, epoch)) break;
           const start = performance.now();
           try {
             const race = await Promise.race([
@@ -631,8 +657,9 @@ export async function executeRun({
               : {}),
           });
 
-          await prisma.evaluationJudgement.create({
-            data: {
+          await prisma.evaluationJudgement.upsert({
+            where: { resultId: result.id },
+            create: {
               resultId: result.id,
               overallScore: judgement.overallScore,
               pass: judgement.pass,
@@ -643,6 +670,28 @@ export async function executeRun({
               errorMessage: judgement.errorMessage,
               rawOutput: judgement.rawOutput ?? null,
               criteriaResults: {
+                create: judgement.criteriaResults.map((criterion) => ({
+                  criterion: criterion.criterion,
+                  score: criterion.score,
+                  pass: criterion.pass,
+                  reason: criterion.reason,
+                })),
+              },
+            },
+            // Idempotent on purpose: a stopped run keeps judging its in-flight jobs while a resume
+            // may already be re-scoring the same answer. Whichever call lands last wins instead of
+            // failing the whole scenario with a unique-constraint error.
+            update: {
+              overallScore: judgement.overallScore,
+              pass: judgement.pass,
+              summary: judgement.summary,
+              evaluatorModel: judgement.evaluatorModel,
+              threshold: judgement.threshold,
+              status: judgement.status,
+              errorMessage: judgement.errorMessage,
+              rawOutput: judgement.rawOutput ?? null,
+              criteriaResults: {
+                deleteMany: {},
                 create: judgement.criteriaResults.map((criterion) => ({
                   criterion: criterion.criterion,
                   score: criterion.score,
@@ -664,7 +713,7 @@ export async function executeRun({
     anyFailed = true;
     console.error(`Evaluation run ${runId} crashed:`, error);
   } finally {
-    const cancelled = runCancellation.get(runId) === true;
+    const cancelled = isStopped(runId, epoch);
     const finalStatus = anyFailed || cancelled ? "partial_failure" : "completed";
     // The credit belongs to this execution, so it always settles, even if a resume took over.
     if (reservationId) {
@@ -692,8 +741,8 @@ export async function executeRun({
           });
         }
       }
-      // remove cancellation flag after run finishes
-      runCancellation.delete(runId);
+      // this execution is finished: release its bookkeeping, but only if nothing newer took over
+      if (runStopEpoch.get(runId) !== undefined && (runStopEpoch.get(runId) ?? 0) <= epoch) runStopEpoch.delete(runId);
       runExecutionEpoch.delete(runId);
     }
   }

@@ -128,6 +128,11 @@ Management thinking, not just software engineering.
   `RUN_IN_PROGRESS` while another run of the same dataset is still executing, and restart
   cooperatively stops the run it replaces. Repeated Restart clicks used to create a dozen
   identical runs, which is what triggered the provider rate limits and the frozen progress bars.
+- **Stop/resume bookkeeping is execution-scoped:** cancellation is a "stop epoch" per run, not a
+  boolean, because a stopped execution keeps judging its in-flight jobs while a resume has already
+  started a newer execution for the same run. Judgements are written with `upsert` on `resultId`
+  for the same reason (two executions may score the same answer). A single boolean plus
+  `judgement.create` produced P2002 errors that marked healthy runs `partial_failure`.
 - **Provider governor:** every outbound model *and* judge call takes a slot from one global pool
   (`services/providerLimiter.ts`, `PROVIDER_MAX_CONCURRENCY`, default 4), and judge calls are
   hard-capped (`JUDGE_TIMEOUT_MS`, default 45s) so a stalled judge can never leave a run
